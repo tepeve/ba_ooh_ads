@@ -1,0 +1,60 @@
+# --- Python & UV ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# --- Variables de Entorno y Secretos (CRÍTICO) ---
+.env
+.env.*
+!.env.example
+
+# --- Datos (Ignoramos todo el contenido de data) ---
+# No queremos subir CSVs, Parquets ni la DB de caché a GitHub
+data/raw/*
+data/processed/*
+data/external/*
+data/cache/*
+*.db
+*.sqlite3
+*.parquet
+*.csv
+*.geojson
+
+# Excepción: Si usas archivos .gitkeep para mantener la estructura de carpetas vacías
+!data/**/.gitkeep
+
+# --- IDEs y Sistema Operativo ---
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Testing & Logs ---
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# --- Docker ---
+# Ignoramos logs o volúmenes locales si se generaran aquí
+docker-context/
+
+# --- Streamlit ---
+.streamlit/secrets.toml
+
+# --- Jupyter Notebooks ---
+.ipynb_checkpoints/
+
+# -- contexto para copilot ---
+PROJECT_CONTEXT.md

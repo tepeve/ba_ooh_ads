@@ -1,0 +1,58 @@
+[project]
+name = "ba-ooh-ads"
+version = "0.1.0"
+description = "Buenos Aires Out Of Home ADS data analysis"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "pandas",
+    "geopandas",
+    "pyarrow",
+    "scipy",
+    "scikit-learn",
+    "matplotlib",
+    "shapely",
+    "h3",
+    "folium",
+    "osmnx",
+    "geopy",
+    "streamlit",
+    "sqlalchemy",
+    "requests>=2.32.5",
+    "python-dotenv",
+    "ipykernel",
+    "jupyterlab", 
+    "pip",
+    "concave_hull",
+    "duckdb"
+    ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "pytest-mock",
+    "black",   # Recomendado para formateo automático
+    "isort",   # Recomendado para ordenar imports
+    "ipykernel", # Para correr notebooks
+]
+
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["*"]
+
+[tool.hatch.build.targets.wheel.package-dir]
+"" = "src"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "unit: Unit tests that don't require external dependencies",
+    "integration: Integration tests that require database",
+    "ci: Tests to run in CI/CD"
+]

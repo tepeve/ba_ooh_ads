@@ -1,0 +1,17 @@
+# Directorios de sistema/Python
+__pycache__
+*.pyc
+.git
+.github
+.venv
+.pytest_cache
+.coverage
+
+# Datos (Los montaremos como volumen para no inflar la imagen)
+data/raw
+data/processed
+data/external
+# OJO: data/cache lo queremos persistir, pero no "copiar" al build inicial necesariamente
+# Si quieres que la imagen ya venga con datos, comenta la línea de abajo.
+# Para desarrollo, mejor ignorar todo data y usar volúmenes.
+data/

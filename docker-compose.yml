@@ -1,0 +1,21 @@
+services:
+  app:
+    build: .
+    container_name: ba_ooh_ads_app
+    # Montamos volúmenes para:
+    # 1. Desarrollo (Hot-reload del código si cambias src o app)
+    # 2. Persistencia (La base de datos SQLite y los archivos descargados)
+    volumes:
+      - ./src:/app/src
+      - ./app:/app/app
+      - ./data:/app/data
+    ports:
+      - "8501:8501"
+    environment:
+      - PYTHONPATH=/app/src:/app
+      # Si usaras APIs externas con keys, irían aquí o en un .env
+      # - GOOGLE_MAPS_KEY=${GOOGLE_MAPS_KEY}
+    
+    # Comando por defecto (Streamlit). 
+    # Si quieres correr el ETL, puedes sobreescribirlo con `docker-compose run ...`
+    command: streamlit run app/main.py --server.address=0.0.0.0
