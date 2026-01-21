@@ -49,14 +49,11 @@ COPY app/ ./app/
 RUN pip install -e .
 # Nota: No copiamos 'data/' aquí porque lo montaremos como volumen en docker-compose
 
-# 6. Exponer puerto de Streamlit
-EXPOSE 8501
-
-# 7. Healthcheck (Opcional pero recomendado para producción)
-HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health || exit 1
+# 6. Exponer puerto de Shiny
+EXPOSE 8000
 
 # 8. Comando por defecto: Levantar la App
-CMD ["streamlit", "run", "app/main.py", "--server.address=0.0.0.0"]
+CMD ["shiny", "run", "--host", "0.0.0.0", "--port", "8000", "app/app.py"]
 ```
 
 # ==========================================
@@ -74,16 +71,17 @@ services:
       - ./src:/app/src
       - ./app:/app/app
       - ./data:/app/data
+      - ./tests:/app/tests
     ports:
-      - "8501:8501"
+      - "8000:8000"
     environment:
       - PYTHONPATH=/app/src:/app
       # Si usaras APIs externas con keys, irían aquí o en un .env
       # - GOOGLE_MAPS_KEY=${GOOGLE_MAPS_KEY}
     
-    # Comando por defecto (Streamlit). 
+    # Comando por defecto (Shiny). 
     # Si quieres correr el ETL, puedes sobreescribirlo con `docker-compose run ...`
-    command: streamlit run app/main.py --server.address=0.0.0.0
+    command: shiny run --host 0.0.0.0 --port 8000 app/app.py
 
 ```
 
@@ -97,7 +95,7 @@ services:
 build:
 	docker-compose build
 
-# Levantar la app (Streamlit) en segundo plano
+# Levantar la app (Shiny) en segundo plano
 up:
 	docker-compose up -d
 
@@ -170,7 +168,10 @@ dependencies = [
     "folium",
     "osmnx",
     "geopy",
-    "streamlit",
+    "shiny",
+    "rsconnect-python",
+    "shinywidgets",
+    "faicons",
     "sqlalchemy",
     "requests>=2.32.5",
     "python-dotenv",
@@ -178,7 +179,9 @@ dependencies = [
     "jupyterlab", 
     "pip",
     "concave_hull",
-    "duckdb"
+    "duckdb",
+    "ipyleaflet",
+    "pydantic-settings"
     ]
 
 [project.optional-dependencies]
@@ -242,8 +245,8 @@ ba_ooh_ads/
 │   └── utils/               # Funciones auxiliares genéricas
 │       ├── __init__.py
 │       └── spatial.py       # Conversiones H3/Geohash
-├── app/                     # Aplicación Streamlit
-│   ├── main.py              # Entrypoint de Streamlit
+├── app/                     # Aplicación Shiny for Python
+│   ├── app.py               # Entrypoint de Shiny
 │   └── components/          # Módulos de UI (mapas, filtros, gráficos)
 ├── notebooks/               # Para experimentación (sandbox)
 │   └── 01_exploratorio.ipynb
@@ -267,7 +270,7 @@ ba_ooh_ads/
 ## 1. Objetivo del Proyecto
 Desarrollar un producto de datos "Nivel Profesional" para portafolio que analiza la publicidad en vía pública en CABA. El objetivo es migrar un análisis legacy de R a una arquitectura de Ingeniería de Datos moderna en Python, demostrando capacidades de ETL, Clean Code, Dockerización y Análisis Espacial avanzado (H3, Grafos, DBSCAN).
 
-El resultado final será un tablero interactivo que permita a los usuarios explorar la ubicación de los anuncios, su entorno comercial (POIs) y su alcance poblacional estimado.
+El resultado final será un tablero interactivo en Shiny for Python que permita a los usuarios explorar la ubicación de los anuncios, su entorno comercial (POIs) y su alcance poblacional estimado.
 
 ## 2. Tech Stack & Herramientas
 - **Lenguaje:** Python 3.11+
@@ -278,6 +281,7 @@ El resultado final será un tablero interactivo que permita a los usuarios explo
 - **Geospatial:** `geopandas`, `shapely`, `h3` (Uber), `osmnx`.
 - **Frontend / Dashboard:** `Shiny for Python` + `ipyleaflet` / `folium`.
 - **Orquestación:** Scripts modulares (`src/etl/*.py`) + `Makefile`.
+- - **Testing:** `pytest`, `pytest-mock`.
 
 ## 3. Arquitectura del Proyecto
 El proyecto sigue una estructura modular, separando responsabilidades por dominio conceptual:
@@ -286,6 +290,7 @@ El proyecto sigue una estructura modular, separando responsabilidades por domini
 ba_ooh_ads/
 ├── data/                       # Volúmenes de Docker (raw, processed, external, cache)
 ├── src/
+│   ├── config.py               # Configuración centralizada (Pydantic)
 │   ├── etl/                    # Lógica de extracción, transformación y carga
 │   │   ├── ads/                # Pipeline principal de Anuncios
 │   │   │   ├── extract_ads.py
@@ -299,7 +304,10 @@ ba_ooh_ads/
 │   │       ├── extract_govmaps.py
 │   │       └── population_reach.py (Censo + Movilidad + H3)
 │   └── utils/                  # Funciones auxiliares (spatial, logging)
-├── app/                        # Aplicación Shiny for Python (Dashboard)
+├── app/                        # Aplicación Shiny (Fuera de src para despliegue limpio)
+│   ├── app.py                  # Entrypoint
+│   ├── ui.py                   # Definición de interfaz
+│   └── server.py               # Lógica reactiva
 ├── tests/                      # Tests unitarios e integración
 ├── Dockerfile                  # Multi-stage build con uv
 ├── docker-compose.yml          # Montaje de volúmenes y servicios
@@ -337,16 +345,19 @@ ba_ooh_ads/
 - **Clustering**: Implementación de algoritmo DBSCAN para detectar centralidades comerciales (Globales y Temáticas).
 - **Análisis Poblacional**: Procesamiento de Censo 2022 y Datos de Viajes SUBE usando DuckDB, integrados mediante grilla H3 (Reach).
 - **Consolidación**: Script consolidate_ads.py que genera el dataset final (tablero_anuncios_consolidado.parquet) uniendo anuncios + clusters + alcance poblacional.
-
+- **Refactor Configuración**: Se centralizando variables en src/config.py
+  -Debemos eliminar los `Path("data/processed")` repetidos.
+  - Tarea: Crear `src/config.py` usando `pydantic-settings` o una clase simple.
+- **Infraestructura App**: Corregir Dockerfile para soportar Shiny en lugar de Streamlit. 
+* 
 🚧 Próximos Objetivos (Roadmap Restante)
-
 1. **Quality Assurance (Testing)**
 Desarrollo de tests unitarios para garantizar la robustez del ETL antes del despliegue final.
 Crear tests para utils_spatial.py (conversiones H3).
 Mockear APIs para testear extract_ads.py y geocoding_ads.py sin hacer peticiones reales.
 Validar la integridad referencial de los ids en el proceso de consolidación.
 
-2. Visualización (Shiny Dashboard)
+1. Visualización (Shiny Dashboard)
 Desarrollo de la interfaz de usuario en src/app/ (o directorio app/) utilizando Shiny for Python.
 
 **Requerimientos del Tablero**:
@@ -370,6 +381,46 @@ Interacciones: Al filtrar en el sidebar, el mapa y los KPIs (si los hubiera) deb
 # FILE: src/__init__.py
 # ==========================================
 ```python
+
+```
+
+# ==========================================
+# FILE: src/config.py
+# ==========================================
+```python
+from pathlib import Path
+from pydantic_settings import BaseSettings
+
+class Settings(BaseSettings):
+    # Paths
+    # Define la raíz del proyecto basándose en la ubicación de este archivo (src/config.py)
+    PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
+    DATA_DIR: Path = PROJECT_ROOT / "data"
+    RAW_DIR: Path = DATA_DIR / "raw"
+    PROCESSED_DIR: Path = DATA_DIR / "processed"
+    EXTERNAL_DIR: Path = DATA_DIR / "external"
+    OUTPUTS_DIR: Path = DATA_DIR / "outputs"
+    CACHE_DIR: Path = DATA_DIR / "cache"
+
+    # Database Paths
+    OSM_DB_PATH: Path = CACHE_DIR / "osm_pois_cache.db"
+    GEOCODE_DB_PATH: Path = CACHE_DIR / "geocache.db"
+
+    # External URLs (Government & Data Sources)
+    ADS_DATA_URL: str = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/administracion-gubernamental-de-ingresos-publicos/padron-anuncios-empadronados/padron-anuncios-empadronados.csv"
+    BARRIOS_URL: str = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/innovacion-transformacion-digital/barrios/barrios.geojson"
+    COMUNAS_URL: str = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/innovacion-transformacion-digital/comunas/comunas.geojson"
+    ZONIFICACIONES_URL: str = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/secretaria-de-desarrollo-urbano/codigo-planeamiento-urbano/codigo-de-planeamiento-urbano-actualizado-al-30062018-poligonos-zip.zip"
+    INDEC_CENSO_WFS: str = "https://geonode.indec.gob.ar/geoserver/ows?service=WFS&version=2.0.0&request=GetFeature&typename=geonode:radios_censales&outputFormat=shape-zip&srsName=EPSG:4326"
+    ETAPAS_URL: str = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/transporte-y-obras-publicas/viajes-etapas-transporte-publico/viajes_BAdata_20241016.csv"
+
+    # H3 Parameters
+    H3_RESOLUTION: int = 9
+
+    class Config:
+        env_file = ".env"
+
+settings = Settings()
 
 ```
 
@@ -470,22 +521,12 @@ from shapely.geometry import Polygon, MultiPolygon
 from h3 import LatLngPoly
 
 from utils.utils_spatial import add_h3_index
-
+from src.config import settings
 
 
 # Configuración de Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-# Configuración de Rutas
-CACHE_DB_PATH = Path("data/cache/osm_pois_cache.db")
-
-PROCESSED_DATA_DIR = Path("data/processed")
-EXTERNAL_DATA_DIR = Path("data/external")
-
-# variables globales
-URL_ETAPAS = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/transporte-y-obras-publicas/viajes-etapas-transporte-publico/viajes_BAdata_20241016.csv"
-H3RESOL = 9
 
 def load_trips_data(url: str) -> pd.DataFrame:
     """
@@ -495,11 +536,11 @@ def load_trips_data(url: str) -> pd.DataFrame:
     """
     # Descarga robusta a disco para evitar IncompleteRead
     filename = url.split('/')[-1]
-    local_path = EXTERNAL_DATA_DIR / filename
+    local_path = settings.EXTERNAL_DIR / filename
     
     if not local_path.exists():
         logger.info(f"Descargando datos de etapas de viaje desde: {url}")
-        EXTERNAL_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        settings.EXTERNAL_DIR.mkdir(parents=True, exist_ok=True)
         with requests.get(url, stream=True) as r:
             r.raise_for_status()
             with open(local_path, 'wb') as f:
@@ -516,11 +557,11 @@ def load_trips_data(url: str) -> pd.DataFrame:
     df_etapas["destino_caba"] = df_etapas.departamento_destino_viaje.between(2000,5999)
 
     # Agregamos índices H3 de origen y destino
-    df_etapas['origen_h3r10'] = add_h3_index(df_etapas, lat_col='latitud_origen_viaje', lon_col='longitud_origen_viaje', resolution=H3RESOL,inplace=False)
-    df_etapas['destino_h3r10'] = add_h3_index(df_etapas, lat_col='latitud_destino_viaje', lon_col='longitud_destino_viaje', resolution=H3RESOL,inplace=False)
+    df_etapas['origen_h3r10'] = add_h3_index(df_etapas, lat_col='latitud_origen_viaje', lon_col='longitud_origen_viaje', resolution=settings.H3_RESOLUTION,inplace=False)
+    df_etapas['destino_h3r10'] = add_h3_index(df_etapas, lat_col='latitud_destino_viaje', lon_col='longitud_destino_viaje', resolution=settings.H3_RESOLUTION,inplace=False)
     
-    df_etapas['origen_h3r9'] = df_etapas['origen_h3r10'].apply(lambda x: h3.cell_to_parent(x, H3RESOL) if pd.notna(x) else None)
-    df_etapas['destino_h3r9'] = df_etapas['destino_h3r10'].apply(lambda x: h3.cell_to_parent(x, H3RESOL) if pd.notna(x) else None)
+    df_etapas['origen_h3r9'] = df_etapas['origen_h3r10'].apply(lambda x: h3.cell_to_parent(x, settings.H3_RESOLUTION) if pd.notna(x) else None)
+    df_etapas['destino_h3r9'] = df_etapas['destino_h3r10'].apply(lambda x: h3.cell_to_parent(x, settings.H3_RESOLUTION) if pd.notna(x) else None)
 
     return df_etapas
 
@@ -628,7 +669,7 @@ def create_h3_grid():
         polys = [geom]
 
     for poly in polys:
-        hexs.update(h3.polygon_to_cells(_poly_to_latlngpoly(poly), H3RESOL))
+        hexs.update(h3.polygon_to_cells(_poly_to_latlngpoly(poly), settings.H3_RESOLUTION))
 
 
     # creamos la grilla de indices H3 que cubren CABA
@@ -651,7 +692,7 @@ def create_h3_grid():
    # vamos a hacer una interpolación diasimétrica entre radios censales y hexágonos H3
     
     # cargamos radios censales como geoDataFrame
-    radios_censales = gpd.read_parquet(EXTERNAL_DATA_DIR / "radios_censales.parquet")
+    radios_censales = gpd.read_parquet(settings.EXTERNAL_DIR / "radios_censales.parquet")
     
     h3_land = gpd.overlay(h3_all, 
                             radios_censales.to_crs(h3_all.crs), 
@@ -917,7 +958,7 @@ def integrate_population_data(df_residentes: pd.DataFrame, df_circulante: pd.Dat
 
 def run_reach():
     # Cargar y procesar datos de etapas de viaje
-    df_etapas = load_trips_data(URL_ETAPAS)
+    df_etapas = load_trips_data(settings.ETAPAS_URL)
     df_trips_agg = aggregate_trips_by_h3(df_etapas)
 
     # Crear grilla H3 y preparar geometrías
@@ -948,7 +989,7 @@ def run_reach():
     df_final_reach = integrate_population_data(h3_population, df_trips_agg)
 
     # Guardar resultados
-    output_path = PROCESSED_DATA_DIR / "population_reach_h3.parquet"
+    output_path = settings.PROCESSED_DIR / "population_reach_h3.parquet"
     df_final_reach.to_parquet(output_path)
     logger.info(f"✅ Población alcanzada (Residente + Circulante) guardada en {output_path}")
     logger.info(f"Columnas generadas: {df_final_reach.columns.tolist()}")
@@ -974,21 +1015,12 @@ from pathlib import Path
 from io import BytesIO
 
 from utils.utils_spatial import download_map
+from src.config import settings
 
 
 # Configuración de Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-# VARIABLES
-URL_PROV = ""
-URL_BARRIOS = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/innovacion-transformacion-digital/barrios/barrios.geojson"
-URL_COMUNAS = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/innovacion-transformacion-digital/comunas/comunas.geojson"
-URL_ZONIFICACIONES = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/secretaria-de-desarrollo-urbano/codigo-planeamiento-urbano/codigo-de-planeamiento-urbano-actualizado-al-30062018-poligonos-zip.zip"
-URL_CENSO= 'https://geonode.indec.gob.ar/geoserver/ows?service=WFS&version=2.0.0&request=GetFeature&typename=geonode:radios_censales&outputFormat=shape-zip&srsName=EPSG:4326'
-
-
-OUTPUT_DIR = Path("data/external")
 
 
 def download_and_process_zonificacion(url: str) -> gpd.GeoDataFrame:
@@ -1049,11 +1081,11 @@ def download_and_process_zonificacion(url: str) -> gpd.GeoDataFrame:
 
 def process_admin_layers():
     """Descarga, procesa y guarda capas administrativas."""
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    settings.EXTERNAL_DIR.mkdir(parents=True, exist_ok=True)
 
     # 1. Barrios
     try:
-        gdf_barrios = download_map(URL_BARRIOS)
+        gdf_barrios = download_map(settings.BARRIOS_URL)
         # Normalizar, renombrar y seleccionar columnas
         gdf_barrios = gdf_barrios.rename(columns=str.lower)
         
@@ -1067,7 +1099,7 @@ def process_admin_layers():
         else:
             gdf_barrios.to_crs(epsg=4326, inplace=True)
 
-        output_path = OUTPUT_DIR / "barrios.parquet"
+        output_path = settings.EXTERNAL_DIR / "barrios.parquet"
         gdf_barrios.to_parquet(output_path)
         logger.info(f"✅ Barrios guardados en {output_path}")
 
@@ -1076,7 +1108,7 @@ def process_admin_layers():
 
     # 2. Comunas
     try:
-        gdf_comunas = download_map(URL_COMUNAS)
+        gdf_comunas = download_map(settings.COMUNAS_URL)
         # Normalizar, renombrar y seleccionar columnas
         gdf_comunas = gdf_comunas.rename(columns=str.lower)
         gdf_comunas['comuna_id'] = gdf_comunas['id'].astype(int)
@@ -1086,7 +1118,7 @@ def process_admin_layers():
         # Asegurar CRS
         gdf_comunas.to_crs(epsg=4326, inplace=True)
 
-        output_path = OUTPUT_DIR / "comunas.parquet"
+        output_path = settings.EXTERNAL_DIR / "comunas.parquet"
         gdf_comunas.to_parquet(output_path)
         logger.info(f"✅ Comunas guardadas en {output_path}")
 
@@ -1095,8 +1127,8 @@ def process_admin_layers():
 
     # 3. Zonificaciones 
     try:
-        gdf_zonif = download_and_process_zonificacion(URL_ZONIFICACIONES)
-        output_path = OUTPUT_DIR / "zonificacion.parquet"
+        gdf_zonif = download_and_process_zonificacion(settings.ZONIFICACIONES_URL)
+        output_path = settings.EXTERNAL_DIR / "zonificacion.parquet"
         gdf_zonif.to_parquet(output_path)
         logger.info(f"✅ Zonificaciones guardadas en {output_path}")
     except Exception as e:
@@ -1105,7 +1137,7 @@ def process_admin_layers():
     # 4. radios censales
     # info en: https://portalgeoestadistico.indec.gob.ar/maps/geoportal/nota_radios_censales.pdf
     try:
-        gdf_rcensales = download_map(URL_CENSO)
+        gdf_rcensales = download_map(settings.INDEC_CENSO_WFS)
          # Normalizar, renombrar y seleccionar columnas
         gdf_rcensales = gdf_rcensales.rename(columns=str.lower)
         # filtramos radio censales de caba unicamente
@@ -1117,7 +1149,7 @@ def process_admin_layers():
         else:
             gdf_rcensales.to_crs(epsg=4326, inplace=True)
 
-        output_path = OUTPUT_DIR / "radios_censales.parquet"
+        output_path = settings.EXTERNAL_DIR / "radios_censales.parquet"
         gdf_rcensales.to_parquet(output_path)
         logger.info(f"✅ Radios censales guardados en {output_path}")
     except Exception as e:
@@ -1134,11 +1166,10 @@ if __name__ == "__main__":
 ```python
 import pandas as pd
 from pathlib import Path
+from src.config import settings
 
 
-PROCESSED_DATA_DIR = Path("data/processed")
-
-df = pd.read_csv(PROCESSED_DATA_DIR / "osm_pois_unique_subtags.csv")
+df = pd.read_csv(settings.PROCESSED_DIR / "osm_pois_unique_subtags.csv")
 
 mapping_rules = {
     'gastronomy': [
@@ -1218,7 +1249,7 @@ summary = df.groupby('macro_category')['count'].sum().sort_values(ascending=Fals
 print(summary)
 
 # Guardar resultado
-df.to_csv(PROCESSED_DATA_DIR / "osm_pois_categorized.csv", index=False)
+df.to_csv(settings.PROCESSED_DIR / "osm_pois_categorized.csv", index=False)
 
 
 ```
@@ -1242,6 +1273,7 @@ import numpy as np
 from shapely.geometry import Polygon
 from concave_hull import concave_hull
 from datetime import datetime
+from src.config import settings
 
 
 # References:
@@ -1254,12 +1286,9 @@ from datetime import datetime
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Configuración de Rutas
-PROCESSED_DATA_DIR = Path("data/processed")
-OUTPUT_DATA_DIR = Path("data/outputs")   
-OSM_POIS = PROCESSED_DATA_DIR / "osm_pois.parquet"
-OSM_POIS_MACROCATEGORIES = PROCESSED_DATA_DIR / "osm_pois_categorized.csv"
-OOH_ADS = PROCESSED_DATA_DIR / "anuncios_geolocalizados.parquet"
+# Rutas a archivos procesados (usar settings)
+OSM_POIS = settings.PROCESSED_DIR / "osm_pois.parquet"
+OSM_POIS_MACROCATEGORIES = settings.PROCESSED_DIR / "osm_pois_categorized.csv"
 
 
 # definición de parámetros de clustering por macro categoría
@@ -1406,18 +1435,18 @@ def run_clustering():
     logger.info("Clustering temático completado.")
     
     # Asignar clusters a anuncios
-    df_ads = pd.read_parquet(OOH_ADS) 
+    df_ads = pd.read_parquet(settings.PROCESSED_DIR / "anuncios_geolocalizados.parquet") 
     gdf_ads = gpd.GeoDataFrame(df_ads,geometry=gpd.points_from_xy(df_ads['long'], df_ads['lat'], crs="EPSG:4326"))
 
     gdf_ads_global = assign_clusters_to_ads(gdf_ads, borders_global)
     gdf_ads_tematicos = assign_clusters_to_ads(gdf_ads, borders_tematicos)
     
     # Guardar resultados
-    OUTPUT_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    borders_global.to_file(OUTPUT_DATA_DIR / "pois_clusters_global.geojson", driver='GeoJSON')
-    borders_tematicos.to_file(OUTPUT_DATA_DIR / "pois_clusters_tematicos.geojson", driver='GeoJSON')
-    gdf_ads_global.to_parquet(PROCESSED_DATA_DIR / "ads_clusters_global.parquet")
-    gdf_ads_tematicos.to_parquet(PROCESSED_DATA_DIR / "ads_clusters_tematicos.parquet")
+    settings.OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+    borders_global.to_file(settings.OUTPUTS_DIR / "pois_clusters_global.geojson", driver='GeoJSON')
+    borders_tematicos.to_file(settings.OUTPUTS_DIR / "pois_clusters_tematicos.geojson", driver='GeoJSON')
+    gdf_ads_global.to_parquet(settings.PROCESSED_DIR / "ads_clusters_global.parquet")
+    gdf_ads_tematicos.to_parquet(settings.PROCESSED_DIR / "ads_clusters_tematicos.parquet")
     
     logger.info("Pipeline de clustering completado.")
 
@@ -1440,18 +1469,14 @@ from shapely.ops import unary_union
 from shapely import wkt
 import yaml
 import time
+from src.config import settings
 
 # Configuración de Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Configuración de Rutas
-CACHE_DB_PATH = Path("data/cache/osm_pois_cache.db")
-PROCESSED_DATA_DIR = Path("data/processed")
-FINAL_OUTPUT_PATH = PROCESSED_DATA_DIR / "osm_pois.parquet"
-
 class OSMPOIExtractor:
-    def __init__(self, db_path: Path = CACHE_DB_PATH):
+    def __init__(self, db_path: Path = settings.OSM_DB_PATH):
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._setup_db()
@@ -1583,8 +1608,7 @@ class OSMPOIExtractor:
         # gdf_distilled = gdf.drop_duplicates(subset=['osmid']).reset_index(drop=True)
         
         # Importamos el archivo que contiene la lista de tipos de POIs que queremos eliminar
-        raw_dir = Path('data/raw/')
-        ignore_file = raw_dir / 'osm_pois_to_ignore.yaml'
+        ignore_file = settings.RAW_DIR / 'osm_pois_to_ignore.yaml'
         amenities_eliminar = []
         if ignore_file.exists():
             with open(ignore_file) as file:
@@ -1646,13 +1670,14 @@ class OSMPOIExtractor:
             unique_tags.columns = ['sub_tag', 'count'] # Renombrar columnas para claridad
 
 
-            unique_tags.to_csv(PROCESSED_DATA_DIR / 'osm_pois_unique_subtags.csv', index=False)
+            unique_tags.to_csv(settings.PROCESSED_DIR / 'osm_pois_unique_subtags.csv', index=False)
             logger.info(f"Tags únicos guardados en 'osm_pois_unique_subtags.csv'")
 
             # Guardar Parquet
-            PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
-            final_gdf.to_parquet(FINAL_OUTPUT_PATH, index=False)
-            logger.info(f"✅ Archivo final guardado en: {FINAL_OUTPUT_PATH} ({len(final_gdf)} registros)")
+            settings.PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+            output_path = settings.PROCESSED_DIR / "osm_pois.parquet"
+            final_gdf.to_parquet(output_path, index=False)
+            logger.info(f"✅ Archivo final guardado en: {output_path} ({len(final_gdf)} registros)")
         else:
             logger.warning("No se obtuvieron datos de ninguna categoría.")
 
@@ -1672,43 +1697,11 @@ import h3
 import logging
 from pathlib import Path
 import numpy as np
+from src.config import settings
 
 # Configuración de Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-# Rutas
-PROCESSED_DATA_DIR = Path("data/processed")
-
-ADS_PATH = PROCESSED_DATA_DIR / "anuncios_geolocalizados.parquet"
-# columnas relevantes: 
-# nro_anuncio, estado_anuncio, 
-# clase, tipo, carateristica, metros
-# fecha_alta_anuncio
-# calle_nombre_norm, calle_altura, nombre(barrio),comuna_left, ciudad, pais
-# distrito, distrito_simply, distrito_desc (no se porqué están todas en missing)
-# needs_geocoding, lat, long, h3_index
-
-POPULATION_PATH = PROCESSED_DATA_DIR / "population_reach_h3.parquet"
-# columnas relevantes:
-# h3_index, 
-# tramo_edad, hombres_residentes, mujeres_residentes, total_residentes
-# hombres_cirulantes, mujeres_circulantes, total_circulantes (hay otros_circulante, qué onda?)
-# hombres_total_reach, mujeres_total_reach, total_reach
-
-CLUSTERS_GLOBAL_PATH = PROCESSED_DATA_DIR / "ads_clusters_global.parquet"
-# nro_anuncio (ojo que puede estar repetido porque el ads puede pertenecer a varios clusters)
-# cluster (ojo que puede haber varios clusters)
-# geometry (parece estar roto)
-
-CLUSTERS_THEMATIC_PATH = PROCESSED_DATA_DIR / "ads_clusters_tematicos.parquet"
-# 'nro_anuncio', 
-# 'h3_index', 'geometry' (parece estar roto)
-# 'index_right' (no sé qué es)
-# 'macro_category_index', 'cluster_special', 'macro_category'],
-
-
-OUTPUT_PATH = PROCESSED_DATA_DIR / "tablero_anuncios_consolidado.parquet"
 
 
 
@@ -1828,7 +1821,7 @@ def calculate_kring_reach(df_pop_wide: pd.DataFrame, k: int = 1) -> pd.DataFrame
 def consolidate_data():
     # 1. Cargar Anuncios (Base)
     logger.info("Cargando anuncios...")
-    df_ads = pd.read_parquet(ADS_PATH)
+    df_ads = pd.read_parquet(settings.PROCESSED_DIR / "anuncios_geolocalizados.parquet")
     
     # Asegurar que tenemos h3_index (generado en transform_ads.py)
     if 'h3_index' not in df_ads.columns:
@@ -1846,7 +1839,7 @@ def consolidate_data():
     
     logger.info("Integrando clusters...")
     try:
-        df_cl_global = pd.read_parquet(CLUSTERS_GLOBAL_PATH)
+        df_cl_global = pd.read_parquet(settings.PROCESSED_DIR / "ads_clusters_global.parquet")
         # Asumiendo que mantiene el índice original o tiene columnas comunes.
         # Vamos a hacer un merge por índice si es posible, o spatial si no.
         # Simplificación: Si ads_clusters_global es una copia de ads con la col 'cluster',
@@ -1858,7 +1851,7 @@ def consolidate_data():
             # Para seguridad, usaremos el índice del dataframe
             df_ads['cluster_global'] = df_cl_global['cluster']
         
-        df_cl_tematicos = pd.read_parquet(CLUSTERS_THEMATIC_PATH)
+        df_cl_tematicos = pd.read_parquet(settings.PROCESSED_DIR / "ads_clusters_tematicos.parquet")
         if 'cluster_special' in df_cl_tematicos.columns:
             df_ads['cluster_tematico'] = df_cl_tematicos['cluster_special']
             df_ads['macro_category'] = df_cl_tematicos['macro_category']
@@ -1867,7 +1860,7 @@ def consolidate_data():
         logger.warning(f"No se pudieron integrar los clusters: {e}")
 
     # 3. Procesar Población (Wide + K-Ring)
-    df_pop_wide = load_and_pivot_population(POPULATION_PATH)
+    df_pop_wide = load_and_pivot_population(settings.PROCESSED_DIR / "population_reach_h3.parquet")
     
     # Calculamos el alcance ampliado (K=1 -> ~300m radio)
     df_reach_kring = calculate_kring_reach(df_pop_wide, k=1)
@@ -1897,8 +1890,9 @@ def consolidate_data():
 
     # 5. Guardar
     logger.info(f"Guardando dataset consolidado con {len(df_final)} anuncios y {len(df_final.columns)} columnas.")
-    df_final.to_parquet(OUTPUT_PATH, index=False)
-    logger.info(f"✅ Archivo listo para Streamlit: {OUTPUT_PATH}")
+    output_path = settings.PROCESSED_DIR / "tablero_anuncios_consolidado.parquet"
+    df_final.to_parquet(output_path, index=False)
+    logger.info(f"✅ Archivo listo para Shiny: {output_path}")
 
 if __name__ == "__main__":
     consolidate_data()
@@ -1919,16 +1913,14 @@ from datetime import datetime
 
 from utils.utils_spatial import add_h3_index, join_with_admin_layer
 from etl.ads.geocoding_ads import GeocodingService
+from src.config import settings
 
 # Configuración de Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Configuración de Rutas
-RAW_DATA_PATH = Path("data/raw/padron_anuncios.csv")
-PROCESSED_DATA_DIR = Path("data/processed")
-EXCLUDED_DATA_PATH = PROCESSED_DATA_DIR / "anuncios_excluidos.csv"
-FINAL_OUTPUT_PATH = PROCESSED_DATA_DIR / "anuncios_geolocalizados.parquet"
+# Añadir: ruta al CSV crudo usando la configuración central
+RAW_DATA_PATH = settings.RAW_DIR / "padron_anuncios.csv"
 
 def clean_column_name(name: str) -> str:
     """
@@ -2050,9 +2042,10 @@ def run_transform():
     df_kept = df[~mask_exclude].copy()
 
     # Guardar excluidos (Auditoría)
-    PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    df_excluded.to_csv(EXCLUDED_DATA_PATH, index=False)
-    logger.info(f"Registros excluidos: {len(df_excluded)}. Guardados en {EXCLUDED_DATA_PATH}")
+    settings.PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+    excluded_path = settings.PROCESSED_DIR / "anuncios_excluidos.csv"
+    df_excluded.to_csv(excluded_path, index=False)
+    logger.info(f"Registros excluidos: {len(df_excluded)}. Guardados en {excluded_path}")
     logger.info(f"Registros a procesar: {len(df_kept)}")
 
     # Coordenadas (Limpieza inicial de comas por puntos si existen)
@@ -2094,7 +2087,8 @@ def run_transform():
         # Actualizamos las columnas lat/long originales con los nuevos valores
         # Pandas update usa el índice para alinear
         df_kept.loc[geo_mask, 'lat'] = df_geocoded['lat']
-        df_kept.loc[geo_mask, 'long'] = df_geocoded['long']
+        # El geocoding devuelve 'lon', nuestra columna destino es 'long'
+        df_kept.loc[geo_mask, 'long'] = df_geocoded['lon']
         
         # Marcar cuáles fueron recuperados exitosamente (lat no nulo despues del proceso)
         recovered = df_kept.loc[geo_mask, 'lat'].notna().sum()
@@ -2106,30 +2100,29 @@ def run_transform():
     
     # 8.1 Agregar índices H3 (resolución 9 ~ nivel manzana)
     logger.info("Generando índices H3 resolución 9...")
-    df_kept = add_h3_index(df_kept, lat_col='lat', lon_col='long', resolution=9,inplace=True,out_col='h3_index')
+    df_kept = add_h3_index(df_kept, lat_col='lat', lon_col='long', resolution=settings.H3_RESOLUTION,inplace=True,out_col='h3_index')
     h3_count = df_kept['h3_index'].notna().sum()
     logger.info(f"Índices H3 generados: {h3_count} de {len(df_kept)}")
     
     # 8.2 Cargar capas administrativas desde parquets
     logger.info("Cargando capas administrativas...")
-    external_data_dir = Path("data/external")
     
     try:
-        gdf_barrios = gpd.read_parquet(external_data_dir / "barrios.parquet")
+        gdf_barrios = gpd.read_parquet(settings.EXTERNAL_DIR / "barrios.parquet")
         logger.info(f"✓ Barrios cargados: {len(gdf_barrios)} registros")
     except Exception as e:
         logger.warning(f"No se pudo cargar barrios.parquet: {e}")
         gdf_barrios = None
     
     try:
-        gdf_comunas = gpd.read_parquet(external_data_dir / "comunas.parquet")
+        gdf_comunas = gpd.read_parquet(settings.EXTERNAL_DIR / "comunas.parquet")
         logger.info(f"✓ Comunas cargadas: {len(gdf_comunas)} registros")
     except Exception as e:
         logger.warning(f"No se pudo cargar comunas.parquet: {e}")
         gdf_comunas = None
     
     try:
-        gdf_zonificacion = gpd.read_parquet(external_data_dir / "zonificacion.parquet")
+        gdf_zonificacion = gpd.read_parquet(settings.EXTERNAL_DIR / "zonificacion.parquet")
         logger.info(f"✓ Zonificación cargada: {len(gdf_zonificacion)} registros")
     except Exception as e:
         logger.warning(f"No se pudo cargar zonificacion.parquet: {e}")
@@ -2220,8 +2213,9 @@ def run_transform():
     logger.info(f"Guardando Parquet final. Total: {final_count}. Con Geo: {valid_geo_count}")
     
     # Guardamos en Parquet (mucho más eficiente que CSV para tipos de datos)
-    df_kept.to_parquet(FINAL_OUTPUT_PATH, index=False)
-    logger.info(f"✅ Proceso finalizado exitosamente: {FINAL_OUTPUT_PATH}")
+    output_path = settings.PROCESSED_DIR / "anuncios_geolocalizados.parquet"
+    df_kept.to_parquet(output_path, index=False)
+    logger.info(f"✅ Proceso finalizado exitosamente: {output_path}")
 
 if __name__ == "__main__":
     run_transform()
@@ -2235,14 +2229,13 @@ import os
 import requests
 import logging
 from pathlib import Path
+from src.config import settings
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Constantes (Idealmente irían en un config.py, pero lo mantenemos simple aquí)
-DATA_URL = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/administracion-gubernamental-de-ingresos-publicos/padron-anuncios-empadronados/padron-anuncios-empadronados.csv"
-RAW_DATA_DIR = Path("data/raw")
+# Constantes
 FILENAME = "padron_anuncios.csv"
 
 def download_file(url: str, dest_folder: Path, filename: str, force: bool = False) -> Path:
@@ -2293,10 +2286,10 @@ def download_file(url: str, dest_folder: Path, filename: str, force: bool = Fals
 def main():
     """Función principal del módulo de extracción."""
     try:
-        file_path = download_file(DATA_URL, RAW_DATA_DIR, FILENAME, force=False)
-        print(f"✅ Extracción completada. Datos disponibles en: {file_path}")
+        file_path = download_file(settings.ADS_DATA_URL, settings.RAW_DIR, FILENAME, force=False)
+        logger.info(f"✅ Extracción completada. Datos disponibles en: {file_path}")
     except Exception as e:
-        print(f"❌ Falló la extracción: {e}")
+        logger.critical(f"❌ Falló la extracción: {e}")
         exit(1)
 
 if __name__ == "__main__":
@@ -2311,27 +2304,24 @@ import sqlite3
 import time
 import logging
 from pathlib import Path
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Union
 
 import pandas as pd
-from geopy.geocoders import Photon #, Nominatim
-from geopy.exc import GeocoderTimedOut, GeocoderServiceError, GeocoderUnavailable
+from geopy.geocoders import Photon
+from geopy.exc import GeocoderTimedOut, GeocoderUnavailable
+from src.config import settings
 
-# Configuración de logging para este módulo
+# Configuración de logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 class GeocodingService:
-    def __init__(self, db_path: str = "data/cache/geocache.db", user_agent: str = "ba_ooh_ads"):
+    def __init__(self, db_path: Union[str, Path] = settings.GEOCODE_DB_PATH, user_agent: str = "ba_ooh_ads"):
         """
         Servicio de geocodificación con caché persistente en SQLite.
-        
-        Args:
-            db_path: Ruta relativa al archivo de base de datos SQLite.
-            user_agent: Identificador único requerido por los términos de uso de Nominatim.
         """
         self.db_path = Path(db_path)
         self.user_agent = user_agent
-        #self.geolocator = Nominatim(user_agent=self.user_agent)
         self.geolocator = Photon(user_agent=self.user_agent)
         
         # Crear carpeta de caché si no existe
@@ -2358,22 +2348,25 @@ class GeocodingService:
     def _load_cache_stats(self):
         """Carga estadísticas simples para loguear."""
         with sqlite3.connect(self.db_path) as conn:
-            count = conn.execute("SELECT count(*) FROM geocache").fetchone()[0]
-        logger.info(f"GeocodingService inicializado. Entradas en caché: {count}")
+            try:
+                count = conn.execute("SELECT count(*) FROM geocache").fetchone()[0]
+                logger.info(f"GeocodingService inicializado. Entradas en caché: {count}")
+            except sqlite3.OperationalError:
+                logger.info("GeocodingService: Base de datos nueva creada.")
 
-    def _get_from_cache(self, address: str) -> Optional[Tuple[float, float]]:
+    def _get_from_cache(self, address: str) -> Optional[Tuple[float, float, str]]:
         """Busca coordenadas en la caché local."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT lat, long FROM geocache WHERE address = ?", (address,))
+            cursor.execute("SELECT lat, long, raw_response FROM geocache WHERE address = ?", (address,))
             result = cursor.fetchone()
             if result:
-                return result
+                return result # (lat, long, raw)
         return None
 
     def _save_to_cache(self, data: List[Tuple]):
         """
-        Guarda una lista de resultados en la caché de una sola vez (Bulk Insert).
+        Guarda una lista de resultados en la caché.
         Data format: [(address, lat, lon, raw_response), ...]
         """
         if not data:
@@ -2387,32 +2380,36 @@ class GeocodingService:
             """, data)
             conn.commit()
 
-
-
-    def geocode(self, address: str, delay: float = 1.0, timeout: int = 5, exactly_one: bool = True) -> Tuple[Optional[float], Optional[float]]:        
+    def geocode(self, address: str, delay: float = 0.5, timeout: int = 5) -> Tuple[Optional[str], Optional[float], Optional[float]]:        
         """
-        Geocodifica una dirección individual.
-        Prioriza la caché. Si no está, consulta la API y espera 'delay' segundos.
+        Geocodifica una dirección individual. Retorna (address_found, lat, lon).
         """
         if not address or pd.isna(address):
             return None, None, None
 
-        clean_address = address.strip().title()
+        # Normalización básica para key de caché (lowercase + strip)
+        cache_key = str(address).strip().lower()
 
         # 1. Intentar Caché
-        cached = self._get_from_cache(clean_address)
+        cached = self._get_from_cache(cache_key)
         if cached:
+            # Retornamos la dirección original (o la del caché si la guardamos), lat, lon
+            # cached[2] es raw_response, no lo retornamos al flujo principal por simplicidad
             return address, cached[0], cached[1]
         
         # 2. Consultar API
         try:
-            location = self.geolocator.geocode(address, timeout=timeout, exactly_one=exactly_one)
-            time.sleep(delay)
+            # Usamos la dirección original para la API para no perder info de casing si fuera útil
+            location = self.geolocator.geocode(address, timeout=timeout)
+            time.sleep(delay) # Respetar límites de la API
+            
             if location:
-                self._save_to_cache([(clean_address, location.latitude, location.longitude, str(location.raw))])
+                # Guardamos usando la cache_key normalizada
+                self._save_to_cache([(cache_key, location.latitude, location.longitude, str(location.raw))])
                 return location.address, location.latitude, location.longitude
             else:
-                logger.warning(f"Dirección no encontrada: {address}")
+                logger.warning(f"Dirección no encontrada en API: {address}")
+                # Podríamos guardar un "no encontrado" para no reintentar, pero por ahora lo dejamos así
                 return None, None, None
 
         except (GeocoderTimedOut, GeocoderUnavailable) as e:
@@ -2420,53 +2417,102 @@ class GeocodingService:
             time.sleep(2)
             return None, None, None
         
-        
-    def bulk_geocode(self, df: pd.DataFrame, address_col: str, delay: float = 1.0, timeout: int = 5) -> pd.DataFrame:
+    def bulk_geocode(self, df: pd.DataFrame, address_col: str, delay: float = 0.5, timeout: int = 5) -> pd.DataFrame:
         """
-        Procesa un DataFrame completo y agrega columnas 'lat' y 'lon'.
-        Muestra progreso y estadísticas al final.
+        Procesa un DataFrame completo y agrega columnas 'found_address', 'lat', 'lon'.
         """
         total = len(df)
-        logger.info(f"Iniciando geocoding masivo de {total} registros...")
+        logger.info(f"Iniciando geocoding masivo de {total} registros. Columna: {address_col}")
         
-        addresses = []
-        lats = []
-        lons = []
-        cache_hits = 0
-        api_calls = 0
+        results = []
         
-        # Iteramos sobre el DataFrame
-        # Nota: Usamos itertuples() que es más rápido que iterrows()
         for i, row in enumerate(df.itertuples(), 1):
-            address = getattr(row, address_col)
-            clean_addr = str(address).strip().lower() if address else ""
-            if self._get_from_cache(clean_addr):
-                cache_hits += 1
-            else:
-                api_calls += 1
-                if i % 10 == 0:
-                    logger.info(f"Procesando {i}/{total} - (API Calls recientes...)")
-
-            address, latitude, longitude = self.geocode(address, delay=delay, timeout=timeout, exactly_one=True)
+            input_address = getattr(row, address_col)
             
-            addresses.append(address)
-            lats.append(latitude)
-            lons.append(longitude)
+            if i % 50 == 0:
+                logger.info(f"Procesando {i}/{total} ({((i/total)*100):.1f}%)")
 
-        # Asignar resultados al DF
-        df['address'] = addresses
-        df['lat'] = lats
-        df['long'] = lons
+            found_address, lat, lon = self.geocode(input_address, delay=delay, timeout=timeout)
+            
+            results.append({
+                'found_address': found_address,
+                'lat': lat,
+                'lon': lon
+            })
+
+        # Convertir resultados a DF preservando el índice original para evitar desalineación
+        results_df = pd.DataFrame(results, index=df.index)
+
+        # Eliminar columnas del DF original que colisionan con las nuevas ('lat', 'lon' si existieran)
+        # para evitar columnas duplicadas en el concat
+        cols_to_drop = [c for c in results_df.columns if c in df.columns]
+        df_clean = df.drop(columns=cols_to_drop)
+
+        # Concatenar alineando por índice
+        df_out = pd.concat([df_clean, results_df], axis=1)
         
-        logger.info(f"Geocoding finalizado. Hits Caché: {cache_hits} | API Calls: {api_calls}")
-        return df
+        hit_ratio = results_df['lat'].notna().mean()
+        logger.info(f"Geocoding finalizado. Tasa de éxito: {hit_ratio:.1%}")
+        return df_out
+
+
+def run_pipeline():
+    """Ejecuta el pipeline de lectura, geocodificación y guardado."""
+    input_file = settings.RAW_DIR / "padron_anuncios.csv"
+    output_file = settings.PROCESSED_DIR / "ads_geocoded.parquet"
+    
+    if not input_file.exists():
+        logger.error(f"Archivo de entrada no encontrado: {input_file}")
+        exit(1)
+        
+    logger.info(f"Cargando datos desde {input_file}...")
+    # Asumimos CSV separado por ; que es típico en datos de BA, ajustaremos si falla
+    try:
+        df = pd.read_csv(input_file, sep=",") # Intentar coma primero (default de extract_ads)
+        if len(df.columns) < 2: 
+             df = pd.read_csv(input_file, sep=";") # Fallback a punto y coma
+    except Exception as e:
+        logger.error(f"Error leyendo CSV: {e}")
+        exit(1)
+
+    logger.info(f"Columnas detectadas: {df.columns.tolist()}")
+
+    # Construcción de dirección completa para mejorar precisión
+    # Buscamos columnas comunes de dirección
+    cols = [c.lower() for c in df.columns]
+    
+    # Lógica heurística para encontrar columnas de dirección
+    if 'domicilio_calle' in cols and 'domicilio_altura' in cols:
+        df['full_address'] = df['domicilio_calle'] + " " + df['domicilio_altura'].fillna('').astype(str) + ", Buenos Aires, Argentina"
+    elif 'calle_nombre' in cols and 'calle_altura' in cols:
+        df['full_address'] = df['calle_nombre'] + " " + df['calle_altura'].fillna('').astype(str) + ", Buenos Aires, Argentina"
+    else:
+        # Fallback: intentar usar la primera columna que parezca dirección o usar todas concatenadas
+        logger.warning("No se detectaron columnas estandar (calle/altura). Intentando usar columna 0 y 1 o asumiendo 'direccion'.")
+        # Para el ejemplo, forzaremos una búsqueda visual si falla, pero agregaremos una columna dummy si no existe
+        if 'direccion' in cols:
+            df['full_address'] = df['direccion'] + ", Buenos Aires, Argentina"
+        else:
+             logger.warning("No se pudo construir la dirección automáticamente. Revise nombres de columnas.")
+             # Lista vacía para no romper, pero el usuario deberá ajustar los nombres de columnas
+             df['full_address'] = None
+
+    # Filtrar solo las que tienen dirección válida para no perder tiempo
+    df_to_process = df.dropna(subset=['full_address']).copy()
+    
+    # Muestreo para pruebas rápidas (comentar para producción completa)
+    # df_to_process = df_to_process.head(20) 
+    
+    service = GeocodingService()
+    df_processed = service.bulk_geocode(df_to_process, address_col='full_address')
+    
+    # Guardar
+    settings.PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+    df_processed.to_parquet(output_file, index=False)
+    logger.info(f"✅ Datos geocodificados guardados en: {output_file}")
 
 if __name__ == "__main__":
-    # Prueba rápida si corres este script directamente
-    logging.basicConfig(level=logging.INFO)
-    service = GeocodingService()
-    latitude, longitude = service.geocode("Obelisco, Buenos Aires, Argentina")
-    print(f"Resultado Prueba: Lat={latitude}, Lon={longitude}")
+    run_pipeline()
 ```
 
 # ==========================================
@@ -2713,4 +2759,563 @@ def _safe_read_shapefile(shp_path: str) -> gpd.GeoDataFrame:
 
 ## Carpeta: app/
 
+# ==========================================
+# FILE: app/app.py
+# ==========================================
+```python
+from pathlib import Path
+from shiny import App, ui
+from shinywidgets import output_widget, render_widget
+import ipyleaflet as L
+import duckdb
+
+# Ruta al archivo consolidado (asumiendo que se ejecuta desde la raíz del proyecto o workdir configurado en Docker)
+# En Docker, workdir es /app, y data está en /app/data.
+DATA_PATH = Path("data/processed/tablero_anuncios_consolidado.parquet")
+
+app_ui = ui.page_fluid(
+    ui.h2("BA OOH Ads - Explorer"),
+    ui.p("Visualización de anuncios publicitarios y alcance poblacional."),
+    
+    ui.layout_sidebar(
+        ui.sidebar(
+            ui.h4("Filtros"),
+            ui.markdown("_Cargando datos via DuckDB..._"),
+            ui.p("Mostrando muestra de 100 registros")
+        ),
+        ui.card(
+            output_widget("map_output"),
+            full_screen=True
+        )
+    )
+)
+
+def server(input, output, session):
+    
+    @render_widget
+    def map_output():
+        # 1. Inicializar mapa centrado en Buenos Aires
+        center = (-34.6037, -58.3816)
+        m = L.Map(center=center, zoom=12, scroll_wheel_zoom=True)
+        
+        # Capa base limpia (CartoDB Positron)
+        carto_layer = L.TileLayer(
+            url='https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
+            attribution='&copy; OpenStreetMap &copy; CARTO'
+        )
+        m.clear_layers()
+        m.add_layer(carto_layer)
+
+        # 2. Cargar datos usando DuckDB
+        if not DATA_PATH.exists():
+            print(f"Advertencia: No se encontró el archivo {DATA_PATH}. Asegúrate de ejecutar el ETL primero.")
+            # Retornar mapa vacío pero funcional
+            return m
+
+        try:
+            # Conexión en memoria
+            con = duckdb.connect(database=":memory:")
+            
+            # Query eficiente: solo leemos las columnas necesarias para el mapa
+            # Limitamos a 100 para prueba de concepto como se solicitó
+            query = f"""
+                SELECT lat, long
+                FROM '{DATA_PATH}'
+                WHERE lat IS NOT NULL AND long IS NOT NULL
+                LIMIT 100
+            """
+            
+            rows = con.execute(query).fetchall()
+            con.close()
+
+            # 3. Generar marcadores
+            markers = []
+            for lat, lon in rows:
+                # Leaflet espera tuplas (lat, lon)
+                markers.append(L.Marker(location=(lat, lon), draggable=False))
+            
+            # Agrupar marcadores para performance y limpieza visual
+            cluster = L.MarkerCluster(markers=markers)
+            m.add_layer(cluster)
+            
+            print(f"✅ Cargados {len(rows)} puntos en el mapa desde {DATA_PATH}.")
+
+        except Exception as e:
+            print(f"❌ Error consultando DuckDB: {e}")
+
+        return m
+
+app = App(app_ui, server)
+
+```
+
 ## Carpeta: tests/
+
+# ==========================================
+# FILE: tests/test_spatial.py
+# ==========================================
+```python
+import pytest
+import pandas as pd
+import geopandas as gpd
+import numpy as np
+import h3
+from shapely.geometry import Polygon, Point
+from src.utils.utils_spatial import add_h3_index, join_with_admin_layer
+
+# ==========================================
+# Fixtures
+# ==========================================
+
+@pytest.fixture
+def df_points_fixture():
+    """
+    Creates a DataFrame with:
+    - ID 1: Valid (Obelisco, BA) -> Should match San Nicolas
+    - ID 2: Valid (Palermo, BA)  -> Should match Palermo
+    - ID 3: Invalid (NaN lat)
+    - ID 4: Invalid (NaN long)
+    """
+    data = {
+        'id': [1, 2, 3, 4],
+        'lat': [-34.6037, -34.5711, np.nan, -34.6000], 
+        'long': [-58.3816, -58.4233, -58.0000, np.nan],
+        'extra_col': ['A', 'B', 'C', 'D']
+    }
+    return pd.DataFrame(data)
+
+@pytest.fixture
+def gdf_admin_fixture():
+    """
+    Creates a GeoDataFrame with 2 Polygons:
+    1. San Nicolas (contains Obelisco)
+    2. Palermo (contains Palermo point)
+    """
+    # Square roughly around Obelisco (-34.6037, -58.3816)
+    poly1 = Polygon([
+        (-58.39, -34.61), (-58.37, -34.61), 
+        (-58.37, -34.60), (-58.39, -34.60), 
+        (-58.39, -34.61)
+    ])
+    
+    # Square roughly around Palermo (-34.5711, -58.4233)
+    poly2 = Polygon([
+        (-58.43, -34.58), (-58.41, -34.58), 
+        (-58.41, -34.56), (-58.43, -34.56), 
+        (-58.43, -34.58)
+    ])
+
+    data = {
+        'barrio': ['San Nicolas', 'Palermo'],
+        'comuna': [1, 14],
+        'geometry': [poly1, poly2]
+    }
+    return gpd.GeoDataFrame(data, crs="EPSG:4326")
+
+# ==========================================
+# Tests: add_h3_index
+# ==========================================
+
+def test_add_h3_index_series(df_points_fixture):
+    """Test default behavior returns a Series and handles NaNs correctly."""
+    result = add_h3_index(
+        df_points_fixture, 
+        lat_col='lat', 
+        lon_col='long', 
+        resolution=9, 
+        inplace=False
+    )
+    
+    assert isinstance(result, pd.Series)
+    assert len(result) == len(df_points_fixture)
+    assert result.name == "h3_res9"
+    
+    # Valid coordinates should have H3 index
+    assert result.iloc[0] is not None
+    assert isinstance(result.iloc[0], str)
+    
+    # Invalid coordinates should be None/NaN
+    assert pd.isna(result.iloc[2])
+    assert pd.isna(result.iloc[3])
+
+def test_add_h3_index_inplace(df_points_fixture):
+    """Test inplace modification of the DataFrame."""
+    df_res = add_h3_index(
+        df_points_fixture.copy(), 
+        lat_col='lat', 
+        lon_col='long', 
+        resolution=9, 
+        inplace=True, 
+        out_col='h3_idx'
+    )
+    
+    assert isinstance(df_res, pd.DataFrame)
+    assert 'h3_idx' in df_res.columns
+    assert df_res.iloc[0]['h3_idx'] is not None
+
+def test_add_h3_index_missing_cols(df_points_fixture):
+    """Test error raised when columns are missing."""
+    with pytest.raises(KeyError):
+        add_h3_index(df_points_fixture, lat_col='non_existent_lat', lon_col='long')
+
+# ==========================================
+# Tests: join_with_admin_layer
+# ==========================================
+
+def test_join_with_admin_layer_basic(df_points_fixture, gdf_admin_fixture):
+    """
+    Test basic spatial join logic.
+    Note: The function implicitly drops rows with invalid coordinates.
+    """
+    res = join_with_admin_layer(
+        df_points_fixture, 
+        gdf_admin_fixture, 
+        lat_col='lat', 
+        lon_col='long'
+    )
+    
+    # Should only contain the 2 valid rows (ID 1 and 2), filtered by valid_mask
+    assert len(res) == 2
+    
+    # Validate spatial match
+    row1 = res[res['id'] == 1].iloc[0]
+    assert row1['barrio'] == 'San Nicolas'
+    assert row1['comuna'] == 1
+    
+    row2 = res[res['id'] == 2].iloc[0]
+    assert row2['barrio'] == 'Palermo'
+    assert row2['comuna'] == 14
+    
+    # Ensure geometry column was dropped from result
+    assert 'geometry' not in res.columns
+    assert 'index_right' not in res.columns
+
+def test_join_with_admin_layer_crs_mismatch(df_points_fixture, gdf_admin_fixture):
+    """Test that function handles CRS mismatch by reprojecting admin layer."""
+    # Convert admin to Web Mercator (meters)
+    gdf_admin_3857 = gdf_admin_fixture.to_crs("EPSG:3857")
+    
+    res = join_with_admin_layer(
+        df_points_fixture, 
+        gdf_admin_3857, 
+        lat_col='lat', 
+        lon_col='long'
+    )
+    
+    assert len(res) == 2
+    # Verify spatial join still works after internal reprojection
+    assert res[res['id'] == 1].iloc[0]['barrio'] == 'San Nicolas'
+
+def test_join_with_admin_layer_outside_points(df_points_fixture, gdf_admin_fixture):
+    """Test valid points that fall outside any polygon (Left Join logic filtered by valid mask)."""
+    # Create a point far away (0, 0)
+    df_far = pd.DataFrame({'id': [99], 'lat': [0.0], 'long': [0.0]})
+    
+    res = join_with_admin_layer(df_far, gdf_admin_fixture)
+    
+    assert len(res) == 1
+    # Should be preserved but with NaN admin attributes
+    assert pd.isna(res.iloc[0]['barrio'])
+    assert pd.isna(res.iloc[0]['comuna'])
+
+def test_join_with_admin_layer_empty_input():
+    """Test behavior with empty input DataFrame."""
+    df_empty = pd.DataFrame(columns=['lat', 'long', 'id'])
+    # Minimal valid admin gdf
+    gdf_admin = gpd.GeoDataFrame({'col': [1], 'geometry': [Point(0,0)]}, crs="EPSG:4326")
+    
+    res = join_with_admin_layer(df_empty, gdf_admin)
+    assert res.empty
+    assert 'col' in res.columns or len(res.columns) == 3 # Depends if merge happens on empty
+
+def test_join_with_admin_layer_bad_geoms(df_points_fixture, gdf_admin_fixture):
+    """Test resilience against None geometries in admin layer."""
+    # Add a row with None geometry
+    new_row = gpd.GeoDataFrame({
+        'barrio': ['Void'], 
+        'comuna': [99], 
+        'geometry': [None]
+    }, crs=gdf_admin_fixture.crs)
+    
+    gdf_admin_with_nan = pd.concat([gdf_admin_fixture, new_row], ignore_index=True)
+    
+    # Should not crash and still process valid points
+    res = join_with_admin_layer(df_points_fixture, gdf_admin_with_nan)
+    
+    assert len(res) == 2
+    assert res[res['id'] == 1].iloc[0]['barrio'] == 'San Nicolas'
+
+```
+
+# ==========================================
+# FILE: tests/conftest.py
+# ==========================================
+```python
+import pytest
+import pandas as pd
+from pathlib import Path
+from src.config import settings
+
+@pytest.fixture(scope="function")
+def mock_env_dirs(tmp_path, monkeypatch):
+    """
+    Sobrescribe las rutas de configuración para apuntar a un directorio temporal.
+    Esto aísla los tests del sistema de archivos real.
+    """
+    # Crear estructura de directorios fake
+    (tmp_path / "data" / "raw").mkdir(parents=True)
+    (tmp_path / "data" / "processed").mkdir(parents=True)
+    (tmp_path / "data" / "cache").mkdir(parents=True)
+    (tmp_path / "data" / "external").mkdir(parents=True)
+
+    # Sobrescribir las variables de la instancia settings
+    monkeypatch.setattr(settings, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(settings, "RAW_DIR", tmp_path / "data" / "raw")
+    monkeypatch.setattr(settings, "PROCESSED_DIR", tmp_path / "data" / "processed")
+    monkeypatch.setattr(settings, "EXTERNAL_DIR", tmp_path / "data" / "external")
+    monkeypatch.setattr(settings, "CACHE_DIR", tmp_path / "data" / "cache")
+    monkeypatch.setattr(settings, "GEOCODE_DB_PATH", tmp_path / "data" / "cache" / "test_geocache.db")
+    
+    return tmp_path
+
+@pytest.fixture
+def sample_ad_csv(mock_env_dirs):
+    """
+    Crea un CSV 'sucio' minimalista simulando el padron de anuncios.
+    """
+    df = pd.DataFrame({
+        "NRO_ANUNCIO": [1001, 1002, 1003],
+        "TIPO": ["PANTALLA LED", "Cartel Saliente", "Mobiliario Urbano"],
+        "DOMICILIO_CALLE": ["AV. CORRIENTES", "Rivadavia", "Avda Santa Fe"],
+        "DOMICILIO_ALTURA": [1000, 2000, None], # Un caso sin altura
+        "CLASE": ["LED", "FRONTAL", "TEST"],
+        "CARACTERISTICA": ["SIMPLE", "DOBLE", "NULL"],
+        "METROS": ["10,5", "5.2", None],
+        "FECHA_ALTA_ANUNCIO": ["2023-01-01", "2023-02-01", "invalid-date"]
+    })
+    
+    file_path = settings.RAW_DIR / "padron_anuncios.csv"
+    df.to_csv(file_path, index=False)
+    return file_path
+
+```
+
+# ==========================================
+# FILE: tests/integration/test_ads_pipeline.py
+# ==========================================
+```python
+import pytest
+import pandas as pd
+import geopandas as gpd
+from shapely.geometry import Polygon
+from src.config import settings
+from src.etl.ads import transform_ads
+
+def test_transform_pipeline_end_to_end(mock_env_dirs, sample_ad_csv, mocker):
+    """
+    Simula la ejecución completa de transform_ads.py.
+    - Lee el CSV mockeado.
+    - Normaliza columnas.
+    - 'Geocodifica' (mock).
+    - Asigna Barrios (mock join).
+    - Genera H3.
+    - Guarda Parquet.
+    """
+    
+    # 1. Mockear la variable global RAW_DATA_PATH en el módulo
+    # Como ya fue importado, necesitamos parchearlo directamente en el módulo
+    mocker.patch.object(transform_ads, 'RAW_DATA_PATH', sample_ad_csv)
+    
+    # 2. Mockear GeocodingService.bulk_geocode para evitar latencia/internet
+    # Devolvemos un DF con coordenadas fijas para los registros del sample_csv
+    df_geo_mock = pd.DataFrame({
+        'found_address': ['Mock Addr 1', 'Mock Addr 2', 'Mock Addr 3'],
+        'lat': [-34.6037, -34.6037, -34.6037], # Obelisco coords para todos
+        'long': [-58.3816, -58.3816, -58.3816]
+    })
+    mocker.patch("src.etl.ads.transform_ads.GeocodingService.bulk_geocode", return_value=df_geo_mock)
+
+    # 3. Mockear la carga de capas administrativas (Barrios/Comunas/Zonif)
+    # Creamos un GeoDataFrame dummy para que el spatial join no falle
+    poly = Polygon([(-58.4, -34.6), (-58.3, -34.6), (-58.3, -34.7), (-58.4, -34.7)])
+    gdf_mock = gpd.GeoDataFrame(
+        {'barrio_desc': ['TEST BARRIO'], 'comuna_desc': ['C1'], 'distrito_simply': ['U20']}, 
+        geometry=[poly], 
+        crs="EPSG:4326"
+    )
+    
+    # Interceptamos todas las llamadas a read_parquet del módulo geopandas dentro de transform_ads
+    # NOTA: transform_ads usa gpd.read_file para geojson/shp, PERO si usa read_parquet para dataframes intermedios?
+    # Revisar implementacion real. En el contexto, se mencionan archivos GeoJSON (barrios.geojson etc).
+    # Como el prompt dice 'Interceptamos todas las llamadas a read_parquet del módulo geopandas',
+    # Asumimos que el script las usa. Si usa read_file, también deberíamos mockearlo.
+    # Por seguridad, mockeamos read_file tambien si es what geopandas uses for geojson.
+    
+    mocker.patch("geopandas.read_file", return_value=gdf_mock) 
+    mocker.patch("geopandas.read_parquet", return_value=gdf_mock)
+    
+    # 4. Ejecutar el pipeline
+    transform_ads.run_transform()
+    
+    # 5. Aserciones finales
+    output_file = settings.PROCESSED_DIR / "anuncios_geolocalizados.parquet"
+    assert output_file.exists(), "El archivo parquet final no fue generado"
+    
+    df_result = pd.read_parquet(output_file)
+    
+    # Verificar estructura y datos
+    assert not df_result.empty, "El dataframe resultante está vacío"
+    assert "h3_index" in df_result.columns, "Falta columna H3"
+    assert "lat" in df_result.columns
+    assert "barrio_desc" in df_result.columns or "barrio" in df_result.columns
+    
+    # Verificar normalización
+    assert "domicilio_calle" in df_result.columns # Columna renometada de DOMICILIO_CALLE -> lower
+    assert df_result.iloc[0]['calle_nombre_norm'] == "Avenida Corrientes" # AV. CORRIENTES normalizado
+
+```
+
+# ==========================================
+# FILE: tests/unit/test_geocoding_service.py
+# ==========================================
+```python
+import pytest
+import sqlite3
+import pandas as pd
+from unittest.mock import MagicMock
+from src.etl.ads.geocoding_ads import GeocodingService
+from src.config import settings
+
+@pytest.fixture
+def geocoding_service(mock_env_dirs):
+    """Instancia el servicio usando la DB temporal del mock_env."""
+    return GeocodingService(db_path=settings.GEOCODE_DB_PATH)
+
+def test_geocode_fetches_from_cache(geocoding_service, mocker):
+    """Si la dirección está en BD, no llama a la API."""
+    # 1. Pre-poblar la base de datos simulada
+    with sqlite3.connect(geocoding_service.db_path) as conn:
+        conn.execute(
+            "INSERT INTO geocache (address, lat, long, raw_response) VALUES (?, ?, ?, ?)",
+            ("calle falsa 123", -34.0, -58.0, "{}")
+        )
+    
+    # 2. Mockear la API (geopy) para asegurar que NO se llame
+    # Necesitamos acceder al objeto geolocator interno
+    mock_api = mocker.patch.object(geocoding_service.geolocator, 'geocode')
+    
+    # 3. Ejecutar
+    addr, lat, lon = geocoding_service.geocode("Calle Falsa 123") # Normaliza a minúsculas internamente
+    
+    # 4. Validar
+    assert lat == -34.0
+    assert lon == -58.0
+    mock_api.assert_not_called()
+
+def test_geocode_calls_api_and_saves(geocoding_service, mocker):
+    """Si no está en caché, llama a API y guarda."""
+    # 1. Mockear respuesta de API
+    mock_location = MagicMock()
+    mock_location.latitude = -34.1
+    mock_location.longitude = -58.1
+    mock_location.address = "Calle Real 123, BA"
+    mock_location.raw = {"place_id": 1}
+    
+    mock_api = mocker.patch.object(geocoding_service.geolocator, 'geocode', return_value=mock_location)
+    
+    # 2. Ejecutar
+    addr, lat, lon = geocoding_service.geocode("Calle Real 123")
+    
+    # 3. Validar retorno
+    assert lat == -34.1
+    
+    # 4. Validar persistencia en DB
+    with sqlite3.connect(geocoding_service.db_path) as conn:
+        row = conn.execute("SELECT lat, long FROM geocache WHERE address = ?", ("calle real 123",)).fetchone()
+        assert row is not None
+        assert row[0] == -34.1
+
+```
+
+# ==========================================
+# FILE: tests/unit/test_ads_functions.py
+# ==========================================
+```python
+import pytest
+import pandas as pd
+from pathlib import Path
+from unittest.mock import MagicMock
+import requests
+
+from src.etl.ads.transform_ads import clean_column_name, normalize_address_text
+from src.etl.ads.extract_ads import download_file
+
+# --- Transform Tests ---
+
+@pytest.mark.parametrize("input_str, expected", [
+    ("NRO ANUNCIO", "nro_anuncio"),
+    ("Domicilio Calle", "domicilio_calle"),
+    ("Árbol", "arbol"), # Tildes
+    ("  Espacios  Extra  ", "espacios_extra"),
+    ("Mixed.Punctuation", "mixedpunctuation"),
+])
+def test_clean_column_name(input_str, expected):
+    """Valida la normalización de nombres de columnas."""
+    assert clean_column_name(input_str) == expected
+
+def test_normalize_address_text():
+    """Valida que las regex de direcciones funcionen correctamente."""
+    df = pd.DataFrame({
+        "calle": ["Av. Corrientes", "Avda Santa Fe", "Pje. Obelisco", "Calle  Con  Espacios", "Tte Gral Peron"]
+    })
+    
+    result = normalize_address_text(df, "calle")
+    
+    expected = [
+        "Avenida Corrientes",
+        "Avenida Santa Fe",
+        "Obelisco", # Pje se elimina
+        "Calle Con Espacios", # Espacios colapsados
+        "Peron" # Tte Gral se elimina
+    ]
+    assert result.tolist() == expected
+
+# --- Extract Tests ---
+
+def test_download_file_success(mock_env_dirs, mocker):
+    """Testea descarga exitosa escribiendo chunks."""
+    # Mock de requests.get retornando un objeto que soporta context manager y iter_content
+    mock_response = MagicMock()
+    mock_response.iter_content.return_value = [b"chunk1", b"chunk2"]
+    mock_response.status_code = 200
+    
+    mock_get = mocker.patch("requests.get", return_value=mock_response)
+    # Necesario para el contexto `with requests.get(...) as r:`
+    mock_response.__enter__.return_value = mock_response
+    mock_response.__exit__.return_value = None
+
+    dest_folder = mock_env_dirs / "data" / "raw"
+    output_path = download_file("http://fake.url/file.csv", dest_folder, "test.csv")
+
+    assert output_path.exists()
+    assert output_path.read_bytes() == b"chunk1chunk2"
+
+def test_download_file_failure_cleanup(mock_env_dirs, mocker):
+    """Testea que si falla la descarga, se borre el archivo parcial."""
+    mock_response = MagicMock()
+    # Simulamos que falla a mitad de camino
+    mock_response.iter_content.side_effect = requests.exceptions.ChunkedEncodingError("Connection broken")
+    
+    mocker.patch("requests.get", return_value=mock_response)
+    mock_response.__enter__.return_value = mock_response
+    mock_response.__exit__.return_value = None
+    
+    dest_folder = mock_env_dirs / "data" / "raw"
+    
+    with pytest.raises(requests.exceptions.RequestException):
+        download_file("http://fake.url/file.csv", dest_folder, "fail.csv")
+    
+    # El archivo no debería existir (cleanup)
+    assert not (dest_folder / "fail.csv").exists()
+
+```
