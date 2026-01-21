@@ -182,7 +182,6 @@ flowchart LR
 
 El archivo final `.parquet` es una tabla desnormalizada ("One Big Table") optimizada para lecturas rápidas en el dashboard:
 
-```
 | Campo | Tipo | Descripción |
 | --- | --- | --- |
 | `id_anuncio` | Int | Identificador único del cartel. |
@@ -194,7 +193,6 @@ El archivo final `.parquet` es una tabla desnormalizada ("One Big Table") optimi
 | `cluster_tematico` | Int | ID del cluster específico (ej: Gastronomía). |
 | `total_reach` | Int | Estimación de personas (residentes + circulantes) en el área de influencia. |
 | `h3_index` | String | Índice hexagonal H3. |
-```
 
 ## 🗃️ Visualización con Shiny
 
