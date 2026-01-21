@@ -24,8 +24,8 @@ ba_ooh_ads/
 │   └── utils/               # Funciones auxiliares genéricas
 │       ├── __init__.py
 │       └── spatial.py       # Conversiones H3/Geohash
-├── app/                     # Aplicación Streamlit
-│   ├── main.py              # Entrypoint de Streamlit
+├── app/                     # Aplicación Shiny for Python
+│   ├── app.py               # Entrypoint de Shiny
 │   └── components/          # Módulos de UI (mapas, filtros, gráficos)
 ├── notebooks/               # Para experimentación (sandbox)
 │   └── 01_exploratorio.ipynb

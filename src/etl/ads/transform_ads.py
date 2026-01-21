@@ -8,16 +8,14 @@ from datetime import datetime
 
 from utils.utils_spatial import add_h3_index, join_with_admin_layer
 from etl.ads.geocoding_ads import GeocodingService
+from src.config import settings
 
 # Configuración de Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Configuración de Rutas
-RAW_DATA_PATH = Path("data/raw/padron_anuncios.csv")
-PROCESSED_DATA_DIR = Path("data/processed")
-EXCLUDED_DATA_PATH = PROCESSED_DATA_DIR / "anuncios_excluidos.csv"
-FINAL_OUTPUT_PATH = PROCESSED_DATA_DIR / "anuncios_geolocalizados.parquet"
+# Añadir: ruta al CSV crudo usando la configuración central
+RAW_DATA_PATH = settings.RAW_DIR / "padron_anuncios.csv"
 
 def clean_column_name(name: str) -> str:
     """
@@ -139,9 +137,10 @@ def run_transform():
     df_kept = df[~mask_exclude].copy()
 
     # Guardar excluidos (Auditoría)
-    PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    df_excluded.to_csv(EXCLUDED_DATA_PATH, index=False)
-    logger.info(f"Registros excluidos: {len(df_excluded)}. Guardados en {EXCLUDED_DATA_PATH}")
+    settings.PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+    excluded_path = settings.PROCESSED_DIR / "anuncios_excluidos.csv"
+    df_excluded.to_csv(excluded_path, index=False)
+    logger.info(f"Registros excluidos: {len(df_excluded)}. Guardados en {excluded_path}")
     logger.info(f"Registros a procesar: {len(df_kept)}")
 
     # Coordenadas (Limpieza inicial de comas por puntos si existen)
@@ -183,7 +182,8 @@ def run_transform():
         # Actualizamos las columnas lat/long originales con los nuevos valores
         # Pandas update usa el índice para alinear
         df_kept.loc[geo_mask, 'lat'] = df_geocoded['lat']
-        df_kept.loc[geo_mask, 'long'] = df_geocoded['long']
+        # El geocoding devuelve 'lon', nuestra columna destino es 'long'
+        df_kept.loc[geo_mask, 'long'] = df_geocoded['lon']
         
         # Marcar cuáles fueron recuperados exitosamente (lat no nulo despues del proceso)
         recovered = df_kept.loc[geo_mask, 'lat'].notna().sum()
@@ -195,30 +195,29 @@ def run_transform():
     
     # 8.1 Agregar índices H3 (resolución 9 ~ nivel manzana)
     logger.info("Generando índices H3 resolución 9...")
-    df_kept = add_h3_index(df_kept, lat_col='lat', lon_col='long', resolution=9,inplace=True,out_col='h3_index')
+    df_kept = add_h3_index(df_kept, lat_col='lat', lon_col='long', resolution=settings.H3_RESOLUTION,inplace=True,out_col='h3_index')
     h3_count = df_kept['h3_index'].notna().sum()
     logger.info(f"Índices H3 generados: {h3_count} de {len(df_kept)}")
     
     # 8.2 Cargar capas administrativas desde parquets
     logger.info("Cargando capas administrativas...")
-    external_data_dir = Path("data/external")
     
     try:
-        gdf_barrios = gpd.read_parquet(external_data_dir / "barrios.parquet")
+        gdf_barrios = gpd.read_parquet(settings.EXTERNAL_DIR / "barrios.parquet")
         logger.info(f"✓ Barrios cargados: {len(gdf_barrios)} registros")
     except Exception as e:
         logger.warning(f"No se pudo cargar barrios.parquet: {e}")
         gdf_barrios = None
     
     try:
-        gdf_comunas = gpd.read_parquet(external_data_dir / "comunas.parquet")
+        gdf_comunas = gpd.read_parquet(settings.EXTERNAL_DIR / "comunas.parquet")
         logger.info(f"✓ Comunas cargadas: {len(gdf_comunas)} registros")
     except Exception as e:
         logger.warning(f"No se pudo cargar comunas.parquet: {e}")
         gdf_comunas = None
     
     try:
-        gdf_zonificacion = gpd.read_parquet(external_data_dir / "zonificacion.parquet")
+        gdf_zonificacion = gpd.read_parquet(settings.EXTERNAL_DIR / "zonificacion.parquet")
         logger.info(f"✓ Zonificación cargada: {len(gdf_zonificacion)} registros")
     except Exception as e:
         logger.warning(f"No se pudo cargar zonificacion.parquet: {e}")
@@ -309,8 +308,9 @@ def run_transform():
     logger.info(f"Guardando Parquet final. Total: {final_count}. Con Geo: {valid_geo_count}")
     
     # Guardamos en Parquet (mucho más eficiente que CSV para tipos de datos)
-    df_kept.to_parquet(FINAL_OUTPUT_PATH, index=False)
-    logger.info(f"✅ Proceso finalizado exitosamente: {FINAL_OUTPUT_PATH}")
+    output_path = settings.PROCESSED_DIR / "anuncios_geolocalizados.parquet"
+    df_kept.to_parquet(output_path, index=False)
+    logger.info(f"✅ Proceso finalizado exitosamente: {output_path}")
 
 if __name__ == "__main__":
     run_transform()

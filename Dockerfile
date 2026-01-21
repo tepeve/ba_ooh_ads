@@ -41,11 +41,8 @@ COPY app/ ./app/
 RUN pip install -e .
 # Nota: No copiamos 'data/' aquí porque lo montaremos como volumen en docker-compose
 
-# 6. Exponer puerto de Streamlit
-EXPOSE 8501
-
-# 7. Healthcheck (Opcional pero recomendado para producción)
-HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health || exit 1
+# 6. Exponer puerto de Shiny
+EXPOSE 8000
 
 # 8. Comando por defecto: Levantar la App
-CMD ["streamlit", "run", "app/main.py", "--server.address=0.0.0.0"]
+CMD ["shiny", "run", "--host", "0.0.0.0", "--port", "8000", "app/app.py"]

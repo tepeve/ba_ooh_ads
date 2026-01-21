@@ -4,7 +4,7 @@
 build:
 	docker-compose build
 
-# Levantar la app (Streamlit) en segundo plano
+# Levantar la app (Shiny) en segundo plano
 up:
 	docker-compose up -d
 
@@ -46,7 +46,7 @@ consolidate:
 etl-full: layers ads osm_pois popu_reach consolidate  
 
 # Limpiar archivos temporales y caché de Python
-clean:
+clean_cache:
 	find . -type d -name "__pycache__" -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete
 

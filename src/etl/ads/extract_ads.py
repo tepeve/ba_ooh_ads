@@ -2,14 +2,13 @@ import os
 import requests
 import logging
 from pathlib import Path
+from src.config import settings
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Constantes (Idealmente irían en un config.py, pero lo mantenemos simple aquí)
-DATA_URL = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/administracion-gubernamental-de-ingresos-publicos/padron-anuncios-empadronados/padron-anuncios-empadronados.csv"
-RAW_DATA_DIR = Path("data/raw")
+# Constantes
 FILENAME = "padron_anuncios.csv"
 
 def download_file(url: str, dest_folder: Path, filename: str, force: bool = False) -> Path:
@@ -60,10 +59,10 @@ def download_file(url: str, dest_folder: Path, filename: str, force: bool = Fals
 def main():
     """Función principal del módulo de extracción."""
     try:
-        file_path = download_file(DATA_URL, RAW_DATA_DIR, FILENAME, force=False)
-        print(f"✅ Extracción completada. Datos disponibles en: {file_path}")
+        file_path = download_file(settings.ADS_DATA_URL, settings.RAW_DIR, FILENAME, force=False)
+        logger.info(f"✅ Extracción completada. Datos disponibles en: {file_path}")
     except Exception as e:
-        print(f"❌ Falló la extracción: {e}")
+        logger.critical(f"❌ Falló la extracción: {e}")
         exit(1)
 
 if __name__ == "__main__":

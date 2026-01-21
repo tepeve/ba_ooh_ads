@@ -4,72 +4,82 @@ import h3
 import logging
 from pathlib import Path
 import numpy as np
+from src.config import settings
 
 # Configuración de Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-# Rutas
-PROCESSED_DATA_DIR = Path("data/processed")
-
-ADS_PATH = PROCESSED_DATA_DIR / "anuncios_geolocalizados.parquet"
-# columnas relevantes: 
-# nro_anuncio, estado_anuncio, 
-# clase, tipo, carateristica, metros
-# fecha_alta_anuncio
-# calle_nombre_norm, calle_altura, nombre(barrio),comuna_left, ciudad, pais
-# distrito, distrito_simply, distrito_desc (no se porqué están todas en missing)
-# needs_geocoding, lat, long, h3_index
-
-POPULATION_PATH = PROCESSED_DATA_DIR / "population_reach_h3.parquet"
-# columnas relevantes:
-# h3_index, 
-# tramo_edad, hombres_residentes, mujeres_residentes, total_residentes
-# hombres_cirulantes, mujeres_circulantes, total_circulantes (hay otros_circulante, qué onda?)
-# hombres_total_reach, mujeres_total_reach, total_reach
-
-CLUSTERS_GLOBAL_PATH = PROCESSED_DATA_DIR / "ads_clusters_global.parquet"
-# nro_anuncio (ojo que puede estar repetido porque el ads puede pertenecer a varios clusters)
-# cluster (ojo que puede haber varios clusters)
-# geometry (parece estar roto)
-
-CLUSTERS_THEMATIC_PATH = PROCESSED_DATA_DIR / "ads_clusters_tematicos.parquet"
-# 'nro_anuncio', 
-# 'h3_index', 'geometry' (parece estar roto)
-# 'index_right' (no sé qué es)
-# 'macro_category_index', 'cluster_special', 'macro_category'],
-
-
-OUTPUT_PATH = PROCESSED_DATA_DIR / "tablero_anuncios_consolidado.parquet"
 
 
 
 def load_and_pivot_population(pop_path: Path) -> pd.DataFrame:
     """
     Carga la población y la pivotea para tener 1 fila por H3 y columnas por métricas.
+    Genera métricas detalladas por:
+      - Tipo: Residente / Circulante / Total (Reach)
+      - Sexo: Hombres / Mujeres / Total
+      - Edad: Tramos etarios
     """
-    logger.info("Cargando y pivoteando datos de población...")
+    logger.info("Cargando y pivoteando datos de población detallados...")
     df_pop = pd.read_parquet(pop_path)
     
-    # Agrupamos primero por H3 para tener el total absoluto del hexágono
-    # (Sumamos todos los tramos de edad)
-    df_h3_total = df_pop.groupby('h3_index')[['total_reach', 'hombres_total_reach', 'mujeres_total_reach']].sum().reset_index()
+    # 1. Totales Generales por H3 (Suma de todas las edades)
+    # Definimos métricas base para agrupar (totales por h3 sin distinguir edad)
+    metrics_base = [
+        # Totales Residentes
+        'hombres_residentes', 'mujeres_residentes', 'total_residentes',
+        # Totales Circulantes
+        'hombres_circulante', 'mujeres_circulante', 'total_circulante', 
+        # Si existe otros_circulante lo incluimos
+        'otros_circulante',
+        # Totales Combinados (Reach)
+        'hombres_total_reach', 'mujeres_total_reach', 'total_reach'
+    ]
+    # Filtrar solo las que existen en el df
+    existing_metrics = [c for c in metrics_base if c in df_pop.columns]
     
-    # Para los tramos de edad, hacemos un pivot
-    # Queremos columnas como: 'total_reach_20_A_24', 'total_reach_25_A_29', etc.
-    df_pivot_age = df_pop.pivot_table(
+    df_h3_total = df_pop.groupby('h3_index')[existing_metrics].sum().reset_index()
+    
+    # 2. Pivoteo por Tramo de Edad
+    # Queremos generar columnas tipo: 'residentes_hombres_age_20_A_24', etc.
+    
+    # Lista de valores a pivotear (métricas desagregadas por edad)
+    values_to_pivot = [
+        # Queremos detalle por edad para residentes y circulantes separados por sexo
+        'hombres_residentes', 'mujeres_residentes', 
+        'hombres_circulante', 'mujeres_circulante',
+        # Y también el total combinado si se quiere
+        'total_reach', 'hombres_total_reach', 'mujeres_total_reach'
+    ]
+    existing_pivot_values = [c for c in values_to_pivot if c in df_pop.columns]
+    
+    # Pivot TABLE
+    # Index: h3_index
+    # Columns: tramo_edad
+    # Values: [metricas...]
+    df_pivot = df_pop.pivot_table(
         index='h3_index', 
         columns='tramo_edad', 
-        values='total_reach', 
+        values=existing_pivot_values, 
         aggfunc='sum',
         fill_value=0
     )
-    # Aplanar nombres de columnas
-    df_pivot_age.columns = [f"age_{c.replace(' ', '_')}" for c in df_pivot_age.columns]
-    df_pivot_age = df_pivot_age.reset_index()
     
-    # Unimos totales con desglose por edad
-    df_wide = pd.merge(df_h3_total, df_pivot_age, on='h3_index', how='left')
+    # El pivot table crea un MultiIndex en columnas (Métrica, Edad)
+    # Lo aplanamos: {Métrica}_age_{Edad}
+    # Ejemplo: hombres_residentes_age_20_A_24
+    new_columns = []
+    for metric, age in df_pivot.columns:
+        # Limpiar edad (ej: "20 A 24" -> "20_A_24")
+        age_clean = str(age).replace(' ', '_')
+        new_columns.append(f"{metric}_age_{age_clean}")
+    
+    df_pivot.columns = new_columns
+    df_pivot = df_pivot.reset_index()
+    
+    # 3. Join Final
+    # Hacemos merge del resumen total con el desglose por edades
+    df_wide = pd.merge(df_h3_total, df_pivot, on='h3_index', how='left')
     
     return df_wide
 
@@ -97,7 +107,7 @@ def calculate_kring_reach(df_pop_wide: pd.DataFrame, k: int = 1) -> pd.DataFrame
     
     for center_h3 in all_h3_indices:
         # Obtener vecinos (incluye el central)
-        neighbors = h3.k_ring(center_h3, k)
+        neighbors = h3.grid_disk(center_h3, k)
         
         # Inicializar acumuladores
         sums = {col: 0 for col in cols_to_sum}
@@ -118,7 +128,7 @@ def calculate_kring_reach(df_pop_wide: pd.DataFrame, k: int = 1) -> pd.DataFrame
 def consolidate_data():
     # 1. Cargar Anuncios (Base)
     logger.info("Cargando anuncios...")
-    df_ads = pd.read_parquet(ADS_PATH)
+    df_ads = pd.read_parquet(settings.PROCESSED_DIR / "anuncios_geolocalizados.parquet")
     
     # Asegurar que tenemos h3_index (generado en transform_ads.py)
     if 'h3_index' not in df_ads.columns:
@@ -136,7 +146,7 @@ def consolidate_data():
     
     logger.info("Integrando clusters...")
     try:
-        df_cl_global = pd.read_parquet(CLUSTERS_GLOBAL_PATH)
+        df_cl_global = pd.read_parquet(settings.PROCESSED_DIR / "ads_clusters_global.parquet")
         # Asumiendo que mantiene el índice original o tiene columnas comunes.
         # Vamos a hacer un merge por índice si es posible, o spatial si no.
         # Simplificación: Si ads_clusters_global es una copia de ads con la col 'cluster',
@@ -148,7 +158,7 @@ def consolidate_data():
             # Para seguridad, usaremos el índice del dataframe
             df_ads['cluster_global'] = df_cl_global['cluster']
         
-        df_cl_tematicos = pd.read_parquet(CLUSTERS_THEMATIC_PATH)
+        df_cl_tematicos = pd.read_parquet(settings.PROCESSED_DIR / "ads_clusters_tematicos.parquet")
         if 'cluster_special' in df_cl_tematicos.columns:
             df_ads['cluster_tematico'] = df_cl_tematicos['cluster_special']
             df_ads['macro_category'] = df_cl_tematicos['macro_category']
@@ -157,7 +167,7 @@ def consolidate_data():
         logger.warning(f"No se pudieron integrar los clusters: {e}")
 
     # 3. Procesar Población (Wide + K-Ring)
-    df_pop_wide = load_and_pivot_population(POPULATION_PATH)
+    df_pop_wide = load_and_pivot_population(settings.PROCESSED_DIR / "population_reach_h3.parquet")
     
     # Calculamos el alcance ampliado (K=1 -> ~300m radio)
     df_reach_kring = calculate_kring_reach(df_pop_wide, k=1)
@@ -187,8 +197,9 @@ def consolidate_data():
 
     # 5. Guardar
     logger.info(f"Guardando dataset consolidado con {len(df_final)} anuncios y {len(df_final.columns)} columnas.")
-    df_final.to_parquet(OUTPUT_PATH, index=False)
-    logger.info(f"✅ Archivo listo para Streamlit: {OUTPUT_PATH}")
+    output_path = settings.PROCESSED_DIR / "tablero_anuncios_consolidado.parquet"
+    df_final.to_parquet(output_path, index=False)
+    logger.info(f"✅ Archivo listo para Shiny: {output_path}")
 
 if __name__ == "__main__":
     consolidate_data()

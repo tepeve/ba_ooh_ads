@@ -13,6 +13,7 @@ import numpy as np
 from shapely.geometry import Polygon
 from concave_hull import concave_hull
 from datetime import datetime
+from src.config import settings
 
 
 # References:
@@ -25,12 +26,9 @@ from datetime import datetime
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Configuración de Rutas
-PROCESSED_DATA_DIR = Path("data/processed")
-OUTPUT_DATA_DIR = Path("data/outputs")   
-OSM_POIS = PROCESSED_DATA_DIR / "osm_pois.parquet"
-OSM_POIS_MACROCATEGORIES = PROCESSED_DATA_DIR / "osm_pois_categorized.csv"
-OOH_ADS = PROCESSED_DATA_DIR / "anuncios_geolocalizados.parquet"
+# Rutas a archivos procesados (usar settings)
+OSM_POIS = settings.PROCESSED_DIR / "osm_pois.parquet"
+OSM_POIS_MACROCATEGORIES = settings.PROCESSED_DIR / "osm_pois_categorized.csv"
 
 
 # definición de parámetros de clustering por macro categoría
@@ -177,18 +175,18 @@ def run_clustering():
     logger.info("Clustering temático completado.")
     
     # Asignar clusters a anuncios
-    df_ads = pd.read_parquet(OOH_ADS) 
+    df_ads = pd.read_parquet(settings.PROCESSED_DIR / "anuncios_geolocalizados.parquet") 
     gdf_ads = gpd.GeoDataFrame(df_ads,geometry=gpd.points_from_xy(df_ads['long'], df_ads['lat'], crs="EPSG:4326"))
 
     gdf_ads_global = assign_clusters_to_ads(gdf_ads, borders_global)
     gdf_ads_tematicos = assign_clusters_to_ads(gdf_ads, borders_tematicos)
     
     # Guardar resultados
-    OUTPUT_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    borders_global.to_file(OUTPUT_DATA_DIR / "pois_clusters_global.geojson", driver='GeoJSON')
-    borders_tematicos.to_file(OUTPUT_DATA_DIR / "pois_clusters_tematicos.geojson", driver='GeoJSON')
-    gdf_ads_global.to_parquet(PROCESSED_DATA_DIR / "ads_clusters_global.parquet")
-    gdf_ads_tematicos.to_parquet(PROCESSED_DATA_DIR / "ads_clusters_tematicos.parquet")
+    settings.OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+    borders_global.to_file(settings.OUTPUTS_DIR / "pois_clusters_global.geojson", driver='GeoJSON')
+    borders_tematicos.to_file(settings.OUTPUTS_DIR / "pois_clusters_tematicos.geojson", driver='GeoJSON')
+    gdf_ads_global.to_parquet(settings.PROCESSED_DIR / "ads_clusters_global.parquet")
+    gdf_ads_tematicos.to_parquet(settings.PROCESSED_DIR / "ads_clusters_tematicos.parquet")
     
     logger.info("Pipeline de clustering completado.")
 

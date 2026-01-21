@@ -1,10 +1,9 @@
 import pandas as pd
 from pathlib import Path
+from src.config import settings
 
 
-PROCESSED_DATA_DIR = Path("data/processed")
-
-df = pd.read_csv(PROCESSED_DATA_DIR / "osm_pois_unique_subtags.csv")
+df = pd.read_csv(settings.PROCESSED_DIR / "osm_pois_unique_subtags.csv")
 
 mapping_rules = {
     'gastronomy': [
@@ -84,5 +83,5 @@ summary = df.groupby('macro_category')['count'].sum().sort_values(ascending=Fals
 print(summary)
 
 # Guardar resultado
-df.to_csv(PROCESSED_DATA_DIR / "osm_pois_categorized.csv", index=False)
+df.to_csv(settings.PROCESSED_DIR / "osm_pois_categorized.csv", index=False)
 

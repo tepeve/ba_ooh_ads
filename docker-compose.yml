@@ -9,13 +9,14 @@ services:
       - ./src:/app/src
       - ./app:/app/app
       - ./data:/app/data
+      - ./tests:/app/tests
     ports:
-      - "8501:8501"
+      - "8000:8000"
     environment:
       - PYTHONPATH=/app/src:/app
       # Si usaras APIs externas con keys, irían aquí o en un .env
       # - GOOGLE_MAPS_KEY=${GOOGLE_MAPS_KEY}
     
-    # Comando por defecto (Streamlit). 
+    # Comando por defecto (Shiny). 
     # Si quieres correr el ETL, puedes sobreescribirlo con `docker-compose run ...`
-    command: streamlit run app/main.py --server.address=0.0.0.0
+    command: shiny run --host 0.0.0.0 --port 8000 app/app.py

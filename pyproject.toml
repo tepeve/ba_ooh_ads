@@ -16,7 +16,10 @@ dependencies = [
     "folium",
     "osmnx",
     "geopy",
-    "streamlit",
+    "shiny",
+    "rsconnect-python",
+    "shinywidgets",
+    "faicons",
     "sqlalchemy",
     "requests>=2.32.5",
     "python-dotenv",
@@ -24,7 +27,9 @@ dependencies = [
     "jupyterlab", 
     "pip",
     "concave_hull",
-    "duckdb"
+    "duckdb",
+    "ipyleaflet",
+    "pydantic-settings"
     ]
 
 [project.optional-dependencies]

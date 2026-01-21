@@ -24,22 +24,12 @@ from shapely.geometry import Polygon, MultiPolygon
 from h3 import LatLngPoly
 
 from utils.utils_spatial import add_h3_index
-
+from src.config import settings
 
 
 # Configuración de Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-# Configuración de Rutas
-CACHE_DB_PATH = Path("data/cache/osm_pois_cache.db")
-
-PROCESSED_DATA_DIR = Path("data/processed")
-EXTERNAL_DATA_DIR = Path("data/external")
-
-# variables globales
-URL_ETAPAS = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/transporte-y-obras-publicas/viajes-etapas-transporte-publico/viajes_BAdata_20241016.csv"
-H3RESOL = 9
 
 def load_trips_data(url: str) -> pd.DataFrame:
     """
@@ -49,11 +39,11 @@ def load_trips_data(url: str) -> pd.DataFrame:
     """
     # Descarga robusta a disco para evitar IncompleteRead
     filename = url.split('/')[-1]
-    local_path = EXTERNAL_DATA_DIR / filename
+    local_path = settings.EXTERNAL_DIR / filename
     
     if not local_path.exists():
         logger.info(f"Descargando datos de etapas de viaje desde: {url}")
-        EXTERNAL_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        settings.EXTERNAL_DIR.mkdir(parents=True, exist_ok=True)
         with requests.get(url, stream=True) as r:
             r.raise_for_status()
             with open(local_path, 'wb') as f:
@@ -70,9 +60,12 @@ def load_trips_data(url: str) -> pd.DataFrame:
     df_etapas["destino_caba"] = df_etapas.departamento_destino_viaje.between(2000,5999)
 
     # Agregamos índices H3 de origen y destino
-    df_etapas['origen_h3'] = add_h3_index(df_etapas, lat_col='latitud_origen_viaje', lon_col='longitud_origen_viaje', resolution=H3RESOL,inplace=False)
-    df_etapas['destino_h3'] = add_h3_index(df_etapas, lat_col='latitud_destino_viaje', lon_col='longitud_destino_viaje', resolution=H3RESOL,inplace=False)
+    df_etapas['origen_h3r10'] = add_h3_index(df_etapas, lat_col='latitud_origen_viaje', lon_col='longitud_origen_viaje', resolution=settings.H3_RESOLUTION,inplace=False)
+    df_etapas['destino_h3r10'] = add_h3_index(df_etapas, lat_col='latitud_destino_viaje', lon_col='longitud_destino_viaje', resolution=settings.H3_RESOLUTION,inplace=False)
     
+    df_etapas['origen_h3r9'] = df_etapas['origen_h3r10'].apply(lambda x: h3.cell_to_parent(x, settings.H3_RESOLUTION) if pd.notna(x) else None)
+    df_etapas['destino_h3r9'] = df_etapas['destino_h3r10'].apply(lambda x: h3.cell_to_parent(x, settings.H3_RESOLUTION) if pd.notna(x) else None)
+
     return df_etapas
 
 def aggregate_trips_by_h3(df_etapas: pd.DataFrame) -> pd.DataFrame:
@@ -114,8 +107,8 @@ def aggregate_trips_by_h3(df_etapas: pd.DataFrame) -> pd.DataFrame:
     cols_to_keep = ['id_tarjeta', 'factor_expansion_viaje', 'genero', 'tramo_edad']
     
     df_etapas_long = pd.concat([
-        df_etapas[['origen_h3', 'origen_caba'] + cols_to_keep].rename(columns={'origen_h3': 'h3_index','origen_caba':'in_caba'}),
-        df_etapas[['destino_h3', 'destino_caba'] + cols_to_keep].rename(columns={'destino_h3': 'h3_index', 'destino_caba':'in_caba'})
+        df_etapas[['origen_h3r9', 'origen_caba'] + cols_to_keep].rename(columns={'origen_h3r9': 'h3_index','origen_caba':'in_caba'}),
+        df_etapas[['destino_h3r9', 'destino_caba'] + cols_to_keep].rename(columns={'destino_h3r9': 'h3_index', 'destino_caba':'in_caba'})
     ], ignore_index=True)
 
     # Filtramos solo hexágonos dentro de CABA
@@ -179,7 +172,7 @@ def create_h3_grid():
         polys = [geom]
 
     for poly in polys:
-        hexs.update(h3.polygon_to_cells(_poly_to_latlngpoly(poly), H3RESOL))
+        hexs.update(h3.polygon_to_cells(_poly_to_latlngpoly(poly), settings.H3_RESOLUTION))
 
 
     # creamos la grilla de indices H3 que cubren CABA
@@ -202,7 +195,7 @@ def create_h3_grid():
    # vamos a hacer una interpolación diasimétrica entre radios censales y hexágonos H3
     
     # cargamos radios censales como geoDataFrame
-    radios_censales = gpd.read_parquet(EXTERNAL_DATA_DIR / "radios_censales.parquet")
+    radios_censales = gpd.read_parquet(settings.EXTERNAL_DIR / "radios_censales.parquet")
     
     h3_land = gpd.overlay(h3_all, 
                             radios_censales.to_crs(h3_all.crs), 
@@ -468,7 +461,7 @@ def integrate_population_data(df_residentes: pd.DataFrame, df_circulante: pd.Dat
 
 def run_reach():
     # Cargar y procesar datos de etapas de viaje
-    df_etapas = load_trips_data(URL_ETAPAS)
+    df_etapas = load_trips_data(settings.ETAPAS_URL)
     df_trips_agg = aggregate_trips_by_h3(df_etapas)
 
     # Crear grilla H3 y preparar geometrías
@@ -499,7 +492,7 @@ def run_reach():
     df_final_reach = integrate_population_data(h3_population, df_trips_agg)
 
     # Guardar resultados
-    output_path = PROCESSED_DATA_DIR / "population_reach_h3.parquet"
+    output_path = settings.PROCESSED_DIR / "population_reach_h3.parquet"
     df_final_reach.to_parquet(output_path)
     logger.info(f"✅ Población alcanzada (Residente + Circulante) guardada en {output_path}")
     logger.info(f"Columnas generadas: {df_final_reach.columns.tolist()}")

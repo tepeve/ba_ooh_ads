@@ -10,21 +10,12 @@ from pathlib import Path
 from io import BytesIO
 
 from utils.utils_spatial import download_map
+from src.config import settings
 
 
 # Configuración de Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-# VARIABLES
-URL_PROV = ""
-URL_BARRIOS = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/innovacion-transformacion-digital/barrios/barrios.geojson"
-URL_COMUNAS = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/innovacion-transformacion-digital/comunas/comunas.geojson"
-URL_ZONIFICACIONES = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/secretaria-de-desarrollo-urbano/codigo-planeamiento-urbano/codigo-de-planeamiento-urbano-actualizado-al-30062018-poligonos-zip.zip"
-URL_CENSO= 'https://geonode.indec.gob.ar/geoserver/ows?service=WFS&version=2.0.0&request=GetFeature&typename=geonode:radios_censales&outputFormat=shape-zip&srsName=EPSG:4326'
-
-
-OUTPUT_DIR = Path("data/external")
 
 
 def download_and_process_zonificacion(url: str) -> gpd.GeoDataFrame:
@@ -85,11 +76,11 @@ def download_and_process_zonificacion(url: str) -> gpd.GeoDataFrame:
 
 def process_admin_layers():
     """Descarga, procesa y guarda capas administrativas."""
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    settings.EXTERNAL_DIR.mkdir(parents=True, exist_ok=True)
 
     # 1. Barrios
     try:
-        gdf_barrios = download_map(URL_BARRIOS)
+        gdf_barrios = download_map(settings.BARRIOS_URL)
         # Normalizar, renombrar y seleccionar columnas
         gdf_barrios = gdf_barrios.rename(columns=str.lower)
         
@@ -103,7 +94,7 @@ def process_admin_layers():
         else:
             gdf_barrios.to_crs(epsg=4326, inplace=True)
 
-        output_path = OUTPUT_DIR / "barrios.parquet"
+        output_path = settings.EXTERNAL_DIR / "barrios.parquet"
         gdf_barrios.to_parquet(output_path)
         logger.info(f"✅ Barrios guardados en {output_path}")
 
@@ -112,7 +103,7 @@ def process_admin_layers():
 
     # 2. Comunas
     try:
-        gdf_comunas = download_map(URL_COMUNAS)
+        gdf_comunas = download_map(settings.COMUNAS_URL)
         # Normalizar, renombrar y seleccionar columnas
         gdf_comunas = gdf_comunas.rename(columns=str.lower)
         gdf_comunas['comuna_id'] = gdf_comunas['id'].astype(int)
@@ -122,7 +113,7 @@ def process_admin_layers():
         # Asegurar CRS
         gdf_comunas.to_crs(epsg=4326, inplace=True)
 
-        output_path = OUTPUT_DIR / "comunas.parquet"
+        output_path = settings.EXTERNAL_DIR / "comunas.parquet"
         gdf_comunas.to_parquet(output_path)
         logger.info(f"✅ Comunas guardadas en {output_path}")
 
@@ -131,8 +122,8 @@ def process_admin_layers():
 
     # 3. Zonificaciones 
     try:
-        gdf_zonif = download_and_process_zonificacion(URL_ZONIFICACIONES)
-        output_path = OUTPUT_DIR / "zonificacion.parquet"
+        gdf_zonif = download_and_process_zonificacion(settings.ZONIFICACIONES_URL)
+        output_path = settings.EXTERNAL_DIR / "zonificacion.parquet"
         gdf_zonif.to_parquet(output_path)
         logger.info(f"✅ Zonificaciones guardadas en {output_path}")
     except Exception as e:
@@ -141,7 +132,7 @@ def process_admin_layers():
     # 4. radios censales
     # info en: https://portalgeoestadistico.indec.gob.ar/maps/geoportal/nota_radios_censales.pdf
     try:
-        gdf_rcensales = download_map(URL_CENSO)
+        gdf_rcensales = download_map(settings.INDEC_CENSO_WFS)
          # Normalizar, renombrar y seleccionar columnas
         gdf_rcensales = gdf_rcensales.rename(columns=str.lower)
         # filtramos radio censales de caba unicamente
@@ -153,7 +144,7 @@ def process_admin_layers():
         else:
             gdf_rcensales.to_crs(epsg=4326, inplace=True)
 
-        output_path = OUTPUT_DIR / "radios_censales.parquet"
+        output_path = settings.EXTERNAL_DIR / "radios_censales.parquet"
         gdf_rcensales.to_parquet(output_path)
         logger.info(f"✅ Radios censales guardados en {output_path}")
     except Exception as e:

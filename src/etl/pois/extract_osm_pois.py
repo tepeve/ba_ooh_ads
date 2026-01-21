@@ -9,18 +9,14 @@ from shapely.ops import unary_union
 from shapely import wkt
 import yaml
 import time
+from src.config import settings
 
 # Configuración de Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Configuración de Rutas
-CACHE_DB_PATH = Path("data/cache/osm_pois_cache.db")
-PROCESSED_DATA_DIR = Path("data/processed")
-FINAL_OUTPUT_PATH = PROCESSED_DATA_DIR / "osm_pois.parquet"
-
 class OSMPOIExtractor:
-    def __init__(self, db_path: Path = CACHE_DB_PATH):
+    def __init__(self, db_path: Path = settings.OSM_DB_PATH):
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._setup_db()
@@ -152,8 +148,7 @@ class OSMPOIExtractor:
         # gdf_distilled = gdf.drop_duplicates(subset=['osmid']).reset_index(drop=True)
         
         # Importamos el archivo que contiene la lista de tipos de POIs que queremos eliminar
-        raw_dir = Path('data/raw/')
-        ignore_file = raw_dir / 'osm_pois_to_ignore.yaml'
+        ignore_file = settings.RAW_DIR / 'osm_pois_to_ignore.yaml'
         amenities_eliminar = []
         if ignore_file.exists():
             with open(ignore_file) as file:
@@ -215,13 +210,14 @@ class OSMPOIExtractor:
             unique_tags.columns = ['sub_tag', 'count'] # Renombrar columnas para claridad
 
 
-            unique_tags.to_csv(PROCESSED_DATA_DIR / 'osm_pois_unique_subtags.csv', index=False)
+            unique_tags.to_csv(settings.PROCESSED_DIR / 'osm_pois_unique_subtags.csv', index=False)
             logger.info(f"Tags únicos guardados en 'osm_pois_unique_subtags.csv'")
 
             # Guardar Parquet
-            PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
-            final_gdf.to_parquet(FINAL_OUTPUT_PATH, index=False)
-            logger.info(f"✅ Archivo final guardado en: {FINAL_OUTPUT_PATH} ({len(final_gdf)} registros)")
+            settings.PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+            output_path = settings.PROCESSED_DIR / "osm_pois.parquet"
+            final_gdf.to_parquet(output_path, index=False)
+            logger.info(f"✅ Archivo final guardado en: {output_path} ({len(final_gdf)} registros)")
         else:
             logger.warning("No se obtuvieron datos de ninguna categoría.")
 
