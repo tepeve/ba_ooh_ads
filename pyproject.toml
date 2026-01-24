@@ -16,21 +16,23 @@ dependencies = [
     "folium",
     "osmnx",
     "geopy",
-    "shiny",
     "rsconnect-python",
-    "shinywidgets",
     "faicons",
     "sqlalchemy",
     "requests>=2.32.5",
     "python-dotenv",
     "ipykernel",
-    "jupyterlab", 
+    "jupyterlab",
     "pip",
     "concave_hull",
     "duckdb",
+    "shiny",
     "ipyleaflet",
-    "pydantic-settings"
-    ]
+    "ipywidgets",
+    "shinywidgets",
+    "plotly",
+    "pydantic-settings",
+]
 
 [project.optional-dependencies]
 dev = [

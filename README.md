@@ -56,7 +56,7 @@ ba_ooh_ads/
 * **Contenerización:** Docker & Docker Compose
 * **Procesamiento:** Pandas, Geopandas, DuckDB (OLAP local), Shapely
 * **Espacial:** H3 (Uber), OSMnx, Scikit-learn (DBSCAN)
-* **Dashboard:** Shiny for Python, Ipyleaflet
+* **Dashboard:** Shiny for Python, Folium, Plotly Express
 * **Testing:** Pytest, Pytest-mock
 
 ## 🚀 Instalación y Despliegue con Docker
@@ -198,9 +198,14 @@ El archivo final `.parquet` es una tabla desnormalizada ("One Big Table") optimi
 
 La aplicación (`app/app.py`) consume el parquet consolidado y expone una interfaz reactiva utilizando **Shiny for Python**.
 
-* **Frontend:** Utiliza `ipyleaflet` para renderizado de mapas de alto rendimiento, permitiendo visualizar miles de puntos y polígonos con clustering dinámico.
-* **Backend:** Utiliza **DuckDB** en memoria para filtrar y agregar datos en tiempo real según las interacciones del usuario en el sidebar (filtrado por barrio, tipo de anuncio o categoría comercial).
-* **Interactividad:** Al seleccionar un anuncio, un popup despliega el perfil completo del activo, incluyendo su ID y métricas de alcance.
+* **Frontend:**
+  * **Mapas:** Utiliza **Folium** para renderizado de mapas estables y ligeros (HTML), con clustering de marcadores para manejar alta densidad de puntos.
+  * **Gráficos:** Implementa **Plotly Express** para visualizaciones interactivas de alcance demográfico, renderizadas como HTML estático (para máxima compatibilidad en contenedores).
+  * **UI:** Sistema de filtros reactivos avanzados, modo oscuro y paneles flotantes de detalle.
+* **Backend:** Utiliza **DuckDB** en memoria para filtrar y agregar datos en tiempo real según las interacciones del usuario en el sidebar (filtrado por tipo, características, metros cuadrados, etc.).
+* **Interactividad:**
+  * **Bridge JS:** Comunicación bidireccional personalizada entre el mapa Folium y el servidor Shiny.
+  * **Análisis Drawer:** Al seleccionar un anuncio en el mapa, un panel lateral despliega el perfil completo, metadatos y un desglose demográfico del alcance (residentes vs circulantes) por rango etario y género.
 
 ## 🧪 Testing
 

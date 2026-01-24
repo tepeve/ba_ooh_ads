@@ -2,7 +2,7 @@
 
 # Construir la imagen
 build:
-	docker-compose build
+	docker-compose build --no-cache
 
 # Levantar la app (Shiny) en segundo plano
 up:

@@ -1,83 +1,408 @@
+import logging
+import json
 from pathlib import Path
-from shiny import App, ui
-from shinywidgets import output_widget, render_widget
-import ipyleaflet as L
-import duckdb
+from typing import Any
 
-# Ruta al archivo consolidado (asumiendo que se ejecuta desde la raíz del proyecto o workdir configurado en Docker)
-# En Docker, workdir es /app, y data está en /app/data.
+import duckdb
+import pandas as pd
+import folium
+from folium.plugins import MarkerCluster
+from shiny import App, reactive, ui, render
+# from shinywidgets import output_widget, render_widget  # Removed to avoid anywidget runtime errors
+import plotly.express as px
+from htmltools import HTML as shiny_HTML, div, strong
+
+# --- Logging Configuration ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+# --- Data Path Configuration ---
 DATA_PATH = Path("data/processed/tablero_anuncios_consolidado.parquet")
 
-app_ui = ui.page_fluid(
-    ui.h2("BA OOH Ads - Explorer"),
-    ui.p("Visualización de anuncios publicitarios y alcance poblacional."),
+# --- Helper Functions ---
+def load_filter_options() -> dict[str, Any]:
+    """Carga opciones de filtros desde el parquet de manera segura."""
+    defaults = {
+        "clase": [], "tipo": [], "caracteristica": [], 
+        "needs_geocoding": [], "metros_min": 0, "metros_max": 100,
+    }
     
+    if not DATA_PATH.exists():
+        return defaults
+    
+    try:
+        con = duckdb.connect(database=":memory:")
+        clase_values = [row[0] for row in con.execute(f"SELECT DISTINCT clase FROM '{DATA_PATH}' WHERE clase IS NOT NULL ORDER BY clase").fetchall()]
+        tipo_values = [row[0] for row in con.execute(f"SELECT DISTINCT tipo FROM '{DATA_PATH}' WHERE tipo IS NOT NULL ORDER BY tipo").fetchall()]
+        caract_values = [row[0] for row in con.execute(f"SELECT DISTINCT caracteristica FROM '{DATA_PATH}' WHERE caracteristica IS NOT NULL ORDER BY caracteristica").fetchall()]
+        needs_geocoding_values = [str(row[0]) for row in con.execute(f"SELECT DISTINCT needs_geocoding FROM '{DATA_PATH}' WHERE needs_geocoding IS NOT NULL ORDER BY needs_geocoding").fetchall()]
+        metros_range = con.execute(f"SELECT MIN(metros), MAX(metros) FROM '{DATA_PATH}' WHERE metros IS NOT NULL").fetchone()
+        con.close()
+        
+        return {
+            "clase": clase_values, "tipo": tipo_values, "caracteristica": caract_values,
+            "needs_geocoding": needs_geocoding_values,
+            "metros_min": int(metros_range[0]) if metros_range and metros_range[0] else 0,
+            "metros_max": int(metros_range[1]) if metros_range and metros_range[1] else 100,
+        }
+    except Exception as e:
+        logger.error(f"Error loading filter options: {e}")
+        return defaults
+
+FILTER_OPTIONS = load_filter_options()
+
+# --- UI Definition ---
+app_ui = ui.page_fillable(
+
+#Cargar librerías JS globales ---
+    ui.tags.head(
+        # Cargamos Plotly manualmente al principio para evitar Race Conditions
+        ui.tags.script(src="https://cdn.plot.ly/plotly-2.35.2.min.js")
+    ),
+
+    # Custom CSS for the absolute panel
+    ui.tags.style("""
+        #details_panel {
+            transition: transform 0.3s ease-in-out;
+            z-index: 1000;
+            background-color: var(--bs-body-bg); 
+            padding: 15px; 
+            border-radius: 8px; 
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1); 
+            display: none; 
+            max-height: 90vh; 
+            overflow-y: auto; 
+            border: 1px solid var(--bs-border-color);
+        }
+        .folium_btn {
+            background-color: #2563eb;
+            color: white;
+            padding: 5px 10px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 5px;
+            font-size: 0.85em;
+        }
+        .folium_btn:hover {
+            background-color: #1d4ed8;
+        }
+    """),
+    
+    # Custom JS to properly handle resizing and messaging from Folium popup
+    ui.tags.script("""
+        // Function to be called from the Folium Popup button
+        window.selectAd = function(id) {
+            Shiny.setInputValue('selected_ad_id', id, {priority: 'event'});
+        };
+    """),
+
     ui.layout_sidebar(
         ui.sidebar(
             ui.h4("Filtros"),
-            ui.markdown("_Cargando datos via DuckDB..._"),
-            ui.p("Mostrando muestra de 100 registros")
+            ui.input_dark_mode(id="dark_mode"),
+            ui.hr(),
+            ui.input_checkbox_group("clase_filter", "Clase:", choices=FILTER_OPTIONS["clase"], selected=FILTER_OPTIONS["clase"]),
+            ui.hr(),
+            ui.input_checkbox_group("tipo_filter", "Tipo:", choices=FILTER_OPTIONS["tipo"], selected=FILTER_OPTIONS["tipo"]),
+            ui.input_action_button("btn_clear_tipo", "Limpiar Tipo", class_="btn-xs btn-light"),
+            ui.hr(),
+            ui.input_selectize("caracteristica_filter", "Característica:", choices=FILTER_OPTIONS["caracteristica"], multiple=True, options={"placeholder": "Seleccionar..."}),
+            ui.hr(),
+            ui.input_checkbox_group("needs_geocoding_filter", "Geocodificación:", choices=FILTER_OPTIONS["needs_geocoding"], selected=FILTER_OPTIONS["needs_geocoding"]),
+            ui.hr(),
+            ui.input_slider("metros_filter", "Metros²:", min=FILTER_OPTIONS["metros_min"], max=FILTER_OPTIONS["metros_max"], value=[FILTER_OPTIONS["metros_min"], FILTER_OPTIONS["metros_max"]], step=1),
+            width=300, 
+            open="desktop",
         ),
+        
         ui.card(
-            output_widget("map_output"),
-            full_screen=True
-        )
-    )
+            ui.card_header(ui.output_text("map_header")),
+            ui.output_ui("map_output"),
+            full_screen=True, fill=True, style="padding: 0;"
+        ),
+    ),
+    
+    # Absolute panel for details (Analysis Drawer)
+    ui.panel_absolute(
+        ui.div(
+            ui.div(
+                ui.h4("Detalle del Anuncio", style="display: inline-block;"),
+                ui.input_action_button("btn_close_panel", "✕", class_="btn-sm btn-light", style="float: right; border: none;"),
+                style="margin-bottom: 10px;"
+            ),
+            ui.output_ui("ad_metadata"),
+            ui.hr(),
+            ui.h5("Estimación de Alcance (Reach)"),
+            ui.output_ui("reach_chart"),
+        ),
+        id="details_panel",
+        top="50px", right="20px", width="450px",
+        draggable=True,
+    ),
 )
 
+# --- SERVER LOGIC ---
 def server(input, output, session):
     
-    @render_widget
-    def map_output():
-        # 1. Inicializar mapa centrado en Buenos Aires
-        center = (-34.6037, -58.3816)
-        m = L.Map(center=center, zoom=12, scroll_wheel_zoom=True)
+    # Reactive value to store selected Ad ID
+    selected_ad = reactive.Value(None)
+    
+    # --- Capture Selection from Folium Popup ---
+    @reactive.effect
+    @reactive.event(input.selected_ad_id)
+    def _():
+        val = input.selected_ad_id()
+        if val:
+            selected_ad.set(val)
+
+    # --- Filter Logic ---
+    @reactive.effect
+    @reactive.event(input.btn_clear_tipo)
+    def _():
+        ui.update_checkbox_group("tipo_filter", selected=[])
+
+    @reactive.effect
+    @reactive.event(input.btn_close_panel)
+    def _():
+        selected_ad.set(None)
+
+    # Observer to show/hide panel based on selection
+    @reactive.effect
+    def _():
+        if selected_ad.get() is not None:
+             ui.insert_ui(
+                ui.tags.script("document.getElementById('details_panel').style.display = 'block';"),
+                selector="body", where="beforeEnd", immediate=True
+            )
+        else:
+            ui.insert_ui(
+                ui.tags.script("document.getElementById('details_panel').style.display = 'none';"),
+                selector="body", where="beforeEnd", immediate=True
+            )
+
+    @reactive.calc
+    def filtered_data() -> list[tuple]:
+        if not DATA_PATH.exists(): return []
         
-        # Capa base limpia (CartoDB Positron)
-        carto_layer = L.TileLayer(
-            url='https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
-            attribution='&copy; OpenStreetMap &copy; CARTO'
-        )
-        m.clear_layers()
-        m.add_layer(carto_layer)
+        s_clase = list(input.clase_filter())
+        s_tipo = list(input.tipo_filter())
+        s_caract = list(input.caracteristica_filter())
+        s_geo = list(input.needs_geocoding_filter())
+        r_metros = input.metros_filter()
+        
+        clauses = ["lat IS NOT NULL", "long IS NOT NULL"]
 
-        # 2. Cargar datos usando DuckDB
-        if not DATA_PATH.exists():
-            print(f"Advertencia: No se encontró el archivo {DATA_PATH}. Asegúrate de ejecutar el ETL primero.")
-            # Retornar mapa vacío pero funcional
-            return m
+        if not s_clase or not s_tipo: return []
+        
+        if s_clase: clauses.append(f"clase IN ({', '.join([f'{chr(39)}{c}{chr(39)}' for c in s_clase])})")
+        if s_tipo: clauses.append(f"tipo IN ({', '.join([f'{chr(39)}{t}{chr(39)}' for t in s_tipo])})")
+        if s_caract: clauses.append(f"caracteristica IN ({', '.join([f'{chr(39)}{c}{chr(39)}' for c in s_caract])})")
+        if r_metros: clauses.append(f"metros BETWEEN {r_metros[0]} AND {r_metros[1]}")
+        
+        if s_geo:
+            conds = []
+            for v in s_geo:
+                v_s = str(v).lower()
+                if v_s == 'true': conds.append("needs_geocoding = TRUE")
+                elif v_s == 'false': conds.append("needs_geocoding = FALSE")
+                else: conds.append(f"needs_geocoding = '{v}'")
+            if conds: clauses.append(f"({' OR '.join(conds)})")
+        else:
+            return []
 
+        # Include nro_anuncio (ID)
+        query = f"""
+            SELECT lat, long, clase, tipo, full_address, barrio_desc, nro_anuncio, metros
+            FROM '{DATA_PATH}'
+            WHERE {" AND ".join(clauses)}
+            LIMIT 1000
+        """
+        
         try:
-            # Conexión en memoria
             con = duckdb.connect(database=":memory:")
-            
-            # Query eficiente: solo leemos las columnas necesarias para el mapa
-            # Limitamos a 100 para prueba de concepto como se solicitó
-            query = f"""
-                SELECT lat, long
-                FROM '{DATA_PATH}'
-                WHERE lat IS NOT NULL AND long IS NOT NULL
-                LIMIT 100
-            """
-            
             rows = con.execute(query).fetchall()
             con.close()
-
-            # 3. Generar marcadores
-            markers = []
-            for lat, lon in rows:
-                # Leaflet espera tuplas (lat, lon)
-                markers.append(L.Marker(location=(lat, lon), draggable=False))
-            
-            # Agrupar marcadores para performance y limpieza visual
-            cluster = L.MarkerCluster(markers=markers)
-            m.add_layer(cluster)
-            
-            print(f"✅ Cargados {len(rows)} puntos en el mapa desde {DATA_PATH}.")
-
+            return rows
         except Exception as e:
-            print(f"❌ Error consultando DuckDB: {e}")
+            logger.error(f"Query Error: {e}")
+            return []
 
-        return m
+    # --- Map Renderer (Folium) ---
+    @output
+    @render.ui
+    def map_output():
+        data = filtered_data()
+        
+        # Create map
+        m = folium.Map(
+            location=[-34.6037, -58.3816],
+            zoom_start=12,
+            tiles='CartoDB positron',
+            width='100%',
+            height='100%'
+        )
+        
+        marker_cluster = MarkerCluster().add_to(m)
+        
+        marker_count = 0
+        for row in data:
+            try:
+                # Ensure float casting
+                raw_lat, raw_lon = row[0], row[1]
+                clase, tipo, addr, barrio, ad_id, metros = row[2], row[3], row[4], row[5], row[6], row[7]
+                
+                if isinstance(raw_lat, str): raw_lat = raw_lat.replace(',', '.')
+                if isinstance(raw_lon, str): raw_lon = raw_lon.replace(',', '.')
+                lat, lon = float(raw_lat), float(raw_lon)
+                
+                if lat == 0 or lon == 0: continue
+                if not (-34.7 < lat < -34.5 and -58.5 < lon < -58.3): continue 
+                
+                # Hybrid Logic: Popup with HTML Button triggers JS function defined in UI
+                popup_html = f"""
+                <div style='min-width: 200px; font-family: sans-serif; font-size: 14px;'>
+                    <strong style='color: #1e40af;'>{clase}</strong><br>
+                    <span style='color: #666;'>{tipo}</span><br>
+                    <div style='margin-top: 4px; font-size: 12px;'>
+                        {addr}<br>
+                        <em>{barrio}</em>
+                    </div>
+                    <button class="folium_btn" onclick="parent.selectAd('{ad_id}')">
+                        📊 Ver Análisis
+                    </button>
+                </div>
+                """
+                
+                color = '#dc2626' if clase == 'Cartelera' else '#2563eb'
+                
+                folium.CircleMarker(
+                    location=[lat, lon],
+                    radius=6,
+                    color=color,
+                    fill=True,
+                    fill_color=color,
+                    fill_opacity=0.7,
+                    weight=1,
+                    popup=folium.Popup(popup_html, max_width=300)
+                ).add_to(marker_cluster)
+                
+                marker_count += 1
+                
+            except Exception as e:
+                continue
+        
+        logger.info(f"Generated Folium map with {marker_count} markers")
+        return shiny_HTML(m._repr_html_())
+
+    @output
+    @render.text 
+    def map_header():
+        count = len(filtered_data())
+        sel = selected_ad.get()
+        txt = f"Mapa de Anuncios ({count} visibles)"
+        if sel:
+            txt += f" - Seleccionado: {sel}"
+        return txt
+
+    # --- Detail Logic ---
+    @reactive.calc
+    def ad_details_data():
+        ad_id = selected_ad.get()
+        if not ad_id: return None
+        
+        try:
+            con = duckdb.connect(database=":memory:")
+            df = con.execute(f"SELECT * FROM '{DATA_PATH}' WHERE nro_anuncio = ?", [ad_id]).df()
+            con.close()
+            if df.empty: return None
+            return df.iloc[0]
+        except Exception as e:
+            logger.error(f"Error fetching details: {e}")
+            return None
+
+    @output
+    @render.ui
+    def ad_metadata():
+        row = ad_details_data()
+        if row is None: return div("Seleccione un anuncio en el mapa")
+        
+        def item(label, val):
+            return div(strong(f"{label}: "), str(val), style="margin-bottom: 4px;")
+            
+        return div(
+            item("ID", row['nro_anuncio']),
+            item("Dirección", row['full_address']),
+            item("Barrio", row['barrio_desc']),
+            item("Comuna", row['comuna_desc']),
+            item("Zonificación", row.get('distrito_desc', 'N/A')),
+            item("Clase", row['clase']),
+            item("Tipo", row['tipo']),
+            item("Característica", row['caracteristica']),
+            item("Metros", f"{row['metros']} m²"),
+            style="font_size: 0.9em;"
+        )
+
+    @output
+    @render.ui
+    def reach_chart():
+        row = ad_details_data()
+        if row is None: return None
+        
+        # Parse logic for Reach columns (same as before)
+        keys = row.index.tolist()
+        import re
+        regex = re.compile(r"(hombres|mujeres)_(residentes|circulante)_age_(.*)_1ring")
+        
+        data_points = []
+        for k in keys:
+            match = regex.match(k)
+            if match:
+                sexo = match.group(1).capitalize()
+                tipo_pob = match.group(2).capitalize()
+                edad = match.group(3).replace('_', ' ')
+                valor = row[k]
+                
+                if valor > 0:
+                    data_points.append({
+                        "Edad": edad,
+                        "Población": valor,
+                        "Grupo": f"{tipo_pob} ({sexo})"
+                    })
+        
+        if not data_points:
+            return div("No hay datos demográficos pormenorizados para este punto.")
+            
+        df_plot = pd.DataFrame(data_points)
+        
+        # Obtenemos el total para el título HTML
+        total_reach = int(row.get('total_reach_1ring', 0))
+
+        fig = px.bar(
+            df_plot, 
+            x="Edad", 
+            y="Población", 
+            color="Grupo", 
+            # title=...  <-- ELIMINAMOS EL TÍTULO INTERNO DE PLOTLY
+            labels={"Población": "Personas", "Edad": "Rango Etario"},
+            category_orders={"Edad": sorted(df_plot["Edad"].unique()) if not df_plot.empty else []},
+            template="plotly_dark" if input.dark_mode() == "dark" else "plotly"
+        )
+        
+        fig.update_layout(
+            barmode='stack', 
+            # Ajustamos márgenes ya que no hay título ocupando espacio arriba
+            margin=dict(l=10, r=10, t=30, b=10), 
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+        
+        # Retornamos un DIV con el Título HTML arriba y el Gráfico abajo
+        return div(
+            ui.h4(f"Total: {total_reach:,} personas", style="text-align: center; margin-bottom: 10px; margin-top: 5px;"),
+            shiny_HTML(fig.to_html(include_plotlyjs=False, full_html=False, config={'displayModeBar': False}))
+        )
 
 app = App(app_ui, server)
