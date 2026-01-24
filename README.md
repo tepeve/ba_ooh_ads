@@ -207,6 +207,9 @@ La aplicación (`app/app.py`) consume el parquet consolidado y expone una interf
   * **Bridge JS:** Comunicación bidireccional personalizada entre el mapa Folium y el servidor Shiny.
   * **Análisis Drawer:** Al seleccionar un anuncio en el mapa, un panel lateral despliega el perfil completo, metadatos y un desglose demográfico del alcance (residentes vs circulantes) por rango etario y género.
 
+![Vista del Dashboard con Panel de Análisis](docs/img/captura_shiny.png)
+
+
 ## 🧪 Testing
 
 El proyecto cuenta con una suite de pruebas robusta ubicada en `tests/`, ejecutada con `pytest`.
