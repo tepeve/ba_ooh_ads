@@ -5,6 +5,7 @@ from typing import Any
 
 import duckdb
 import pandas as pd
+import geopandas as gpd
 import folium
 from folium.plugins import MarkerCluster
 from shiny import App, reactive, ui, render
@@ -25,13 +26,14 @@ DATA_PATH = Path("data/processed/tablero_anuncios_consolidado.parquet")
 # --- Helper Functions ---
 def load_filter_options() -> dict[str, Any]:
     """Carga opciones de filtros desde el parquet de manera segura."""
-    defaults = {
+    default_values = {
         "clase": [], "tipo": [], "caracteristica": [], 
         "needs_geocoding": [], "metros_min": 0, "metros_max": 100,
+        "macro_category": [], "barrio": [], "comuna": []
     }
     
     if not DATA_PATH.exists():
-        return defaults
+        return default_values
     
     try:
         con = duckdb.connect(database=":memory:")
@@ -40,7 +42,19 @@ def load_filter_options() -> dict[str, Any]:
         caract_values = [row[0] for row in con.execute(f"SELECT DISTINCT caracteristica FROM '{DATA_PATH}' WHERE caracteristica IS NOT NULL ORDER BY caracteristica").fetchall()]
         needs_geocoding_values = [str(row[0]) for row in con.execute(f"SELECT DISTINCT needs_geocoding FROM '{DATA_PATH}' WHERE needs_geocoding IS NOT NULL ORDER BY needs_geocoding").fetchall()]
         metros_range = con.execute(f"SELECT MIN(metros), MAX(metros) FROM '{DATA_PATH}' WHERE metros IS NOT NULL").fetchone()
-        macro_values = [row[0] for row in con.execute(f"SELECT DISTINCT unnest(macro_category) FROM '{DATA_PATH}' WHERE macro_category IS NOT NULL ORDER BY 1").fetchall()]
+        
+        # Check if column exists before querying (robustness)
+        cols = [c[0] for c in con.execute(f"DESCRIBE SELECT * FROM '{DATA_PATH}' LIMIT 0").fetchall()]
+        
+        if 'macro_category' in cols:
+            macro_values = [row[0] for row in con.execute(f"SELECT DISTINCT unnest(macro_category) FROM '{DATA_PATH}' WHERE macro_category IS NOT NULL ORDER BY 1").fetchall()]
+        else:
+            macro_values = []
+            
+        # New Location Filters
+        barrio_values = [row[0] for row in con.execute(f"SELECT DISTINCT barrio_desc FROM '{DATA_PATH}' WHERE barrio_desc IS NOT NULL ORDER BY 1").fetchall()] if 'barrio_desc' in cols else []
+        comuna_values = [row[0] for row in con.execute(f"SELECT DISTINCT comuna_desc FROM '{DATA_PATH}' WHERE comuna_desc IS NOT NULL ORDER BY 1").fetchall()] if 'comuna_desc' in cols else []
+        
         con.close()
         
         return {
@@ -48,14 +62,54 @@ def load_filter_options() -> dict[str, Any]:
             "needs_geocoding": needs_geocoding_values,
             "metros_min": int(metros_range[0]) if metros_range and metros_range[0] else 0,
             "metros_max": int(metros_range[1]) if metros_range and metros_range[1] else 100,
-            "macro_category": macro_values 
+            "macro_category": macro_values, 
+            "barrio": barrio_values,
+            "comuna": comuna_values
         }
     
     except Exception as e:
         logger.error(f"Error loading filter options: {e}")
-        return defaults
+        return default_values
 
 FILTER_OPTIONS = load_filter_options()
+
+# --- Load Geometries (Global Cache) ---
+def load_geometry_layers():
+    layers = {}
+    base_path = Path("data")
+    
+    # Mapping: Key -> (Path, Name, Color)
+    definitions = {
+        'barrios': (base_path / "external/barrios.parquet", "Barrios", "#6b7280"),
+        'comunas': (base_path / "external/comunas.parquet", "Comunas", "#374151"),
+        'zonificacion': (base_path / "external/zonificacion.parquet", "Zonificación", "#10b981"),
+        'clusters_global': (base_path / "outputs/pois_clusters_global.geojson", "Clusters Globales", "#8b5cf6"),
+        'clusters_tematicos': (base_path / "outputs/pois_clusters_tematicos.geojson", "Clusters Temáticos", "#f59e0b")
+    }
+
+    for key, (path, name, color) in definitions.items():
+        if path.exists():
+            try:
+                gdf = gpd.read_file(path) if path.suffix == '.geojson' else gpd.read_parquet(path)
+                # Ensure CRS is web mercator compatible
+                if gdf.crs and gdf.crs.to_string() != "EPSG:4326":
+                    gdf = gdf.to_crs("EPSG:4326")
+                
+                # Simplify complex polygons for map performance if needed
+                if 'zonificacion' in key or 'clusters' in key:
+                     gdf['geometry'] = gdf.geometry.simplify(tolerance=0.0001, preserve_topology=True)
+                
+                layers[key] = {
+                    "gdf": gdf,
+                    "name": name,
+                    "color": color
+                }
+                logger.info(f"Loaded geo layer: {name} ({len(gdf)} feats)")
+            except Exception as e:
+                logger.warning(f"Could not load {name}: {e}")
+    return layers
+
+GEO_LAYERS = load_geometry_layers()
 
 # --- UI Definition ---
 app_ui = ui.page_fillable(
@@ -107,6 +161,9 @@ app_ui = ui.page_fillable(
         ui.sidebar(
             ui.h4("Filtros"),
             ui.input_dark_mode(id="dark_mode"),
+            ui.hr(),
+            ui.input_selectize("barrio_filter", "Barrio:", choices=FILTER_OPTIONS.get("barrio", []), multiple=True, options={"placeholder": "Todos..."}),
+            ui.input_selectize("comuna_filter", "Comuna:", choices=FILTER_OPTIONS.get("comuna", []), multiple=True, options={"placeholder": "Todas..."}),
             ui.hr(),
             ui.input_checkbox_group("clase_filter", "Clase:", choices=FILTER_OPTIONS["clase"], selected=FILTER_OPTIONS["clase"]),
             ui.hr(),
@@ -203,6 +260,10 @@ def server(input, output, session):
         r_metros = input.metros_filter()
         s_macro = list(input.macro_filter()) 
         
+        # New inputs
+        s_barrio = list(input.barrio_filter())
+        s_comuna = list(input.comuna_filter())
+
         clauses = ["lat IS NOT NULL", "long IS NOT NULL"]
 
         if not s_clase or not s_tipo: return []
@@ -212,6 +273,12 @@ def server(input, output, session):
         if s_caract: clauses.append(f"caracteristica IN ({', '.join([f'{chr(39)}{c}{chr(39)}' for c in s_caract])})")
         if r_metros: clauses.append(f"metros BETWEEN {r_metros[0]} AND {r_metros[1]}")
         
+        if s_barrio:
+             clauses.append(f"barrio_desc IN ({', '.join([f'{chr(39)}{b}{chr(39)}' for b in s_barrio])})")
+        
+        if s_comuna:
+             clauses.append(f"comuna_desc IN ({', '.join([f'{chr(39)}{c}{chr(39)}' for c in s_comuna])})")
+
         if s_macro:
             # Escapar comillas simples para SQL
             safe_macros = [m.replace("'", "''") for m in s_macro]
@@ -263,7 +330,34 @@ def server(input, output, session):
             height='100%'
         )
         
-        marker_cluster = MarkerCluster().add_to(m)
+        # 1. Add Administrative/Cluster Layers (from Global Cache)
+        # Add them first so markers appear on top (Leaflet order mostly respects addition order for z-index, but MarkerClusters usually sit high)
+        for key, layer_info in GEO_LAYERS.items():
+            gdf = layer_info['gdf']
+            name = layer_info['name']
+            color = layer_info['color']
+            
+            # Determine style based on layer type
+            is_cluster = 'clusters' in key
+            fill_opacity = 0.4 if is_cluster else 0.0
+            weight = 2 if is_cluster else 1
+            
+            fg = folium.FeatureGroup(name=name, show=False) # Start hidden to avoid clutter
+            
+            folium.GeoJson(
+                gdf,
+                style_function=lambda x, c=color, fo=fill_opacity, w=weight: {
+                    'fillColor': c, 'color': c, 'weight': w, 'fillOpacity': fo
+                },
+                tooltip=folium.GeoJsonTooltip(fields=[gdf.columns[0]], aliases=["Nombre:"]) if not gdf.empty else None,
+                name=name
+            ).add_to(fg)
+            
+            fg.add_to(m)
+
+        # 2. Add Ads Markers
+        fg_ads = folium.FeatureGroup(name="Anuncios", show=True)
+        marker_cluster = MarkerCluster().add_to(fg_ads)
         
         marker_count = 0
         for row in data:
@@ -311,6 +405,12 @@ def server(input, output, session):
                 
             except Exception as e:
                 continue
+        
+        # Add Ads layer to map
+        fg_ads.add_to(m)
+        
+        # Add Layer Control to toggle layers
+        folium.LayerControl(collapsed=True).add_to(m)
         
         logger.info(f"Generated Folium map with {marker_count} markers")
         return shiny_HTML(m._repr_html_())
