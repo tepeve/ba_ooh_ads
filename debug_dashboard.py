@@ -95,6 +95,23 @@ def inspect_parquet():
     n_tipo = con.execute(f"SELECT COUNT(DISTINCT tipo) FROM '{FILE_PATH}'").fetchone()[0]
     print(f"Distinct Clase: {n_clase}")
     print(f"Distinct Tipo: {n_tipo}")
+
+    # Check Cluster Columns
+    print("\n--- Check Cluster Columns ---")
+    target_cols = ['cluster_global', 'cluster_tematico', 'macro_category']
+    existing_col_names = [s[0] for s in schema]
+    
+    for col in target_cols:
+        if col in existing_col_names:
+            print(f"✅ {col} exists.")
+            # Print stats
+            try:
+                stats = con.execute(f"SELECT COUNT(*), COUNT({col}), COUNT(DISTINCT {col}) FROM '{FILE_PATH}'").fetchone()
+                print(f"   Total: {stats[0]}, Non-Null: {stats[1]}, Distinct: {stats[2]}")
+            except Exception as e:
+                print(f"   Error analyzing {col}: {e}")
+        else:
+            print(f"❌ {col} is MISSING.")
     
     con.close()
 

@@ -128,78 +128,117 @@ def calculate_kring_reach(df_pop_wide: pd.DataFrame, k: int = 1) -> pd.DataFrame
 def consolidate_data():
     # 1. Cargar Anuncios (Base)
     logger.info("Cargando anuncios...")
-    df_ads = pd.read_parquet(settings.PROCESSED_DIR / "anuncios_geolocalizados.parquet")
+    anuncios_path = settings.PROCESSED_DIR / "anuncios_geolocalizados.parquet"
+    if not anuncios_path.exists():
+        raise FileNotFoundError(f"No se encontró: {anuncios_path}")
+        
+    df_ads = pd.read_parquet(anuncios_path)
     
-    # Asegurar que tenemos h3_index (generado en transform_ads.py)
+    # Validamos que existe nro_anuncio para el merge
+    if 'nro_anuncio' not in df_ads.columns:
+        raise ValueError("El dataset de anuncios no tiene 'nro_anuncio'.")
     if 'h3_index' not in df_ads.columns:
-        raise ValueError("El dataset de anuncios no tiene la columna 'h3_index'. Ejecuta transform_ads.py primero.")
+        logger.warning("Falta h3_index, necesario para población.")
 
-    # 2. Cargar Clusters (Centralidades)
-    # Asumimos que estos parquets tienen un ID de anuncio o geometría para unir.
-    # Si tus scripts de clustering guardaron 'ads_clusters_*.parquet' con el índice original o un ID, úsalo.
-    # Si guardaron solo geometría, habría que hacer spatial join de nuevo.
-    # REVISANDO TU CÓDIGO ANTERIOR: 'assign_clusters_to_ads' hace sjoin.
-    # Asumiremos que el parquet de clusters tiene las columnas del anuncio original + 'cluster'.
-    
-    # Estrategia: Cargar solo las columnas de cluster e ID (o índice) para pegar a df_ads
-    # Si df_ads no tiene ID único, usaremos el índice.
-    
     logger.info("Integrando clusters...")
+    
+    # --- PROCESAMIENTO CLUSTERS GLOBAL ---
+    # Estrategia: Tomar el primer cluster asignado (asumiendo unicidad espacial o prioridad)
     try:
-        df_cl_global = pd.read_parquet(settings.PROCESSED_DIR / "ads_clusters_global.parquet")
-        # Asumiendo que mantiene el índice original o tiene columnas comunes.
-        # Vamos a hacer un merge por índice si es posible, o spatial si no.
-        # Simplificación: Si ads_clusters_global es una copia de ads con la col 'cluster',
-        # extraemos solo esa columna y la pegamos.
-        
-        # Renombrar para evitar colisiones
-        if 'cluster' in df_cl_global.columns:
-            # Asumimos alineación por índice si el orden no cambió, o usamos merge si hay ID
-            # Para seguridad, usaremos el índice del dataframe
-            df_ads['cluster_global'] = df_cl_global['cluster']
-        
-        df_cl_tematicos = pd.read_parquet(settings.PROCESSED_DIR / "ads_clusters_tematicos.parquet")
-        if 'cluster_special' in df_cl_tematicos.columns:
-            df_ads['cluster_tematico'] = df_cl_tematicos['cluster_special']
-            df_ads['macro_category'] = df_cl_tematicos['macro_category']
-            
+        path_global = settings.PROCESSED_DIR / "ads_clusters_global.parquet"
+        if path_global.exists():
+            df_g = pd.read_parquet(path_global)
+            if 'nro_anuncio' in df_g.columns and 'cluster' in df_g.columns:
+                df_g_agg = df_g.groupby('nro_anuncio')['cluster'].first().reset_index()
+                df_g_agg = df_g_agg.rename(columns={'cluster': 'cluster_global'})
+                
+                df_ads = pd.merge(df_ads, df_g_agg, on='nro_anuncio', how='left')
+                logger.info("Clusters globales integrados.")
+            else:
+                logger.warning("Faltan columnas clave en ads_clusters_global")
+                df_ads['cluster_global'] = None
+        else:
+            df_ads['cluster_global'] = None
     except Exception as e:
-        logger.warning(f"No se pudieron integrar los clusters: {e}")
+        logger.error(f"Error clusters globales: {e}")
+        df_ads['cluster_global'] = None
+
+    # --- PROCESAMIENTO CLUSTERS TEMATICOS (Listas 1-a-N) ---
+    # Estrategia: Agrupar en listas valores únicos de categorías y clusters
+    try:
+        path_tematicos = settings.PROCESSED_DIR / "ads_clusters_tematicos.parquet"
+        if path_tematicos.exists():
+            df_t = pd.read_parquet(path_tematicos)
+            if 'nro_anuncio' in df_t.columns:
+                agg_rules = {}
+                if 'cluster_special' in df_t.columns:
+                    # set() para eliminar duplicados, list() para compatibilidad parquet
+                    agg_rules['cluster_special'] = lambda x: list(set(x))
+                if 'macro_category' in df_t.columns:
+                    agg_rules['macro_category'] = lambda x: list(set(x))
+                
+                if agg_rules:
+                    df_t_agg = df_t.groupby('nro_anuncio').agg(agg_rules).reset_index()
+                    
+                    rename_map = {}
+                    if 'cluster_special' in df_t_agg.columns:
+                        rename_map['cluster_special'] = 'cluster_tematico'
+                    
+                    df_t_agg = df_t_agg.rename(columns=rename_map)
+                    
+                    df_ads = pd.merge(df_ads, df_t_agg, on='nro_anuncio', how='left')
+                    logger.info("Clusters temáticos integrados (modo lista).")
+                else:
+                    df_ads['cluster_tematico'] = None
+                    df_ads['macro_category'] = None
+            else:
+                 logger.warning("Falta nro_anuncio en ads_clusters_tematicos")
+                 df_ads['cluster_tematico'] = None
+                 df_ads['macro_category'] = None
+        else:
+            df_ads['cluster_tematico'] = None
+            df_ads['macro_category'] = None
+    except Exception as e:
+        logger.error(f"Error clusters temáticos: {e}")
+        df_ads['cluster_tematico'] = None
+        df_ads['macro_category'] = None
+
+    # Normalizar columnas faltantes
+    for col in ['cluster_global', 'cluster_tematico', 'macro_category']:
+        if col not in df_ads.columns:
+            df_ads[col] = None
 
     # 3. Procesar Población (Wide + K-Ring)
-    df_pop_wide = load_and_pivot_population(settings.PROCESSED_DIR / "population_reach_h3.parquet")
-    
-    # Calculamos el alcance ampliado (K=1 -> ~300m radio)
-    df_reach_kring = calculate_kring_reach(df_pop_wide, k=1)
-    
-    # Renombrar columnas para que quede claro que es "Reach" (Alcance)
-    # Ej: total_reach -> reach_total_1ring
-    rename_map = {c: f"{c}_1ring" for c in df_reach_kring.columns if c != 'h3_index'}
-    df_reach_kring = df_reach_kring.rename(columns=rename_map)
+    try:
+        pop_path = settings.PROCESSED_DIR / "population_reach_h3.parquet"
+        if pop_path.exists() and 'h3_index' in df_ads.columns:
+            df_pop_wide = load_and_pivot_population(pop_path)
+            df_reach_kring = calculate_kring_reach(df_pop_wide, k=1)
+            
+            rename_map = {c: f"{c}_1ring" for c in df_reach_kring.columns if c != 'h3_index'}
+            df_reach_kring = df_reach_kring.rename(columns=rename_map)
 
-    # 4. Merge Final
-    logger.info("Uniendo métricas de alcance a los anuncios...")
-    df_final = pd.merge(
-        df_ads,
-        df_reach_kring,
-        left_on='h3_index',
-        right_on='h3_index',
-        how='left'
-    )
-    
-    # Llenar nulos de alcance con 0 (si no hay nadie en el hexágono ni vecinos)
-    cols_reach = list(rename_map.values())
-    df_final[cols_reach] = df_final[cols_reach].fillna(0)
-    
-    # Limpieza
+            logger.info("Uniendo métricas de alcance...")
+            df_final = pd.merge(df_ads, df_reach_kring, on='h3_index', how='left')
+            
+            # Llenar nulos de métricas con 0
+            cols_reach = list(rename_map.values())
+            df_final[cols_reach] = df_final[cols_reach].fillna(0)
+        else:
+            logger.warning("Saltando población (archivo faltante o sin h3_index).")
+            df_final = df_ads
+            
+    except Exception as e:
+        logger.error(f"Error procesando población: {e}")
+        df_final = df_ads
+
     if 'h3_index' in df_final.columns:
         df_final = df_final.drop(columns=['h3_index'])
 
     # 5. Guardar
-    logger.info(f"Guardando dataset consolidado con {len(df_final)} anuncios y {len(df_final.columns)} columnas.")
+    logger.info(f"Guardando consolidado: {len(df_final)} filas.")
     output_path = settings.PROCESSED_DIR / "tablero_anuncios_consolidado.parquet"
     df_final.to_parquet(output_path, index=False)
-    logger.info(f"✅ Archivo listo para Shiny: {output_path}")
-
+    logger.info(f"✅ Archivo listo: {output_path}")
 if __name__ == "__main__":
     consolidate_data()

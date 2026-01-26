@@ -93,7 +93,7 @@ services:
 
 # Construir la imagen
 build:
-	docker-compose build
+	docker-compose build --no-cache
 
 # Levantar la app (Shiny) en segundo plano
 up:
@@ -168,21 +168,23 @@ dependencies = [
     "folium",
     "osmnx",
     "geopy",
-    "shiny",
     "rsconnect-python",
-    "shinywidgets",
     "faicons",
     "sqlalchemy",
     "requests>=2.32.5",
     "python-dotenv",
     "ipykernel",
-    "jupyterlab", 
+    "jupyterlab",
     "pip",
     "concave_hull",
     "duckdb",
+    "shiny",
     "ipyleaflet",
-    "pydantic-settings"
-    ]
+    "ipywidgets",
+    "shinywidgets",
+    "plotly",
+    "pydantic-settings",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -213,6 +215,7 @@ markers = [
     "integration: Integration tests that require database",
     "ci: Tests to run in CI/CD"
 ]
+
 ```
 
 # ==========================================
@@ -220,45 +223,244 @@ markers = [
 # ==========================================
 ```python
 
+# BA OOH Ads: Análisis de Publicidad Exterior
+
+Proyecto de Data Engineering y Análisis Espacial que implementa un pipeline ETL moderno para extraer, procesar y visualizar el impacto de la publicidad en vía pública en la Ciudad de Buenos Aires.
+
+## 🎯 Propósito del Pipeline
+
+El objetivo principal de este proyecto es migrar un análisis legacy a una arquitectura escalable en Python, capaz de ingerir datos de padrones publicitarios, geolocalizarlos con precisión y enriquecerlos con contexto urbano (puntos de interés comercial y alcance poblacional). El sistema final alimenta un dashboard interactivo para la toma de decisiones basada en datos espaciales.
+
+Los componentes principales del pipeline son:
+
+* **Extracción (E):** Consume datos heterogéneos de múltiples fuentes:
+1. **Padrón de Anuncios:** Datos administrativos del GCBA (CSV).
+2. **Entorno Comercial (POIs):** Extracción de OpenStreetMap via Overpass API (OSMnx).
+3. **Demografía y Movilidad:** Datos del Censo 2022 (INDEC) y viajes en transporte público (SUBE) procesados con DuckDB.
+4. **Capas Administrativas:** GeoJSONs oficiales de Barrios, Comunas y Zonificación.
 
 
+* **Transformación (T):**
+* **Geocodificación:** Normalización de direcciones y geocoding contra APIs (Photon) con una capa de caché persistente en SQLite.
+* **Modelado Espacial:** Generación de grillas hexagonales **H3** (Uber) para unificar geometrías dispares.
+* **Machine Learning:** Detección de centralidades comerciales mediante algoritmos de clustering (**DBSCAN**).
+
+* **Consolidación:** Integra todas las dimensiones en una estructura columnar optimizada (`.parquet`) lista para ser explotada por el motor de visualización.
 
 ## 📁 Estructura del Repositorio
-```
+
+```text
 ba_ooh_ads/
-├── .venv/                # Gestionado por uv
-├── data/
-│   ├── raw/              # Datos crudos (el CSV de la web)
-│   ├── processed/        # Datos limpios (Parquet con lat/lon)
-│   ├── external/         # GeoJSONs de barrios, etc.
-│   └── cache/            # Tu base de datos SQLite (geocoding.db)
-├── src/
-│   ├── etl/              # Scripts de extracción y transformación
-│   │   ├── extract.py    # Descarga de datos
-│   │   ├── geocoding.py  # Lógica con caché y APIs
-│   │   └── transform.py  # Limpieza y normalización
-│   ├── analysis/            # Lógica de negocio / Data Science
-│   │   ├── __init__.py
-│   │   ├── grids.py         # H3, geohash.
-│   │   ├── clustering.py    # DBSCAN, K-Means
-│   │   └── metrics.py       # Cálculos de densidad, distancias de red
-│   └── utils/               # Funciones auxiliares genéricas
-│       ├── __init__.py
-│       └── spatial.py       # Conversiones H3/Geohash
-├── app/                     # Aplicación Shiny for Python
-│   ├── app.py               # Entrypoint de Shiny
-│   └── components/          # Módulos de UI (mapas, filtros, gráficos)
-├── notebooks/               # Para experimentación (sandbox)
-│   └── 01_exploratorio.ipynb
-├── tests/                   # Tests unitarios (pytest)
-├── Dockerfile
-├── docker-compose.yml
-├── Makefile                 # Comandos rápidos (make run, make etl)
-├── pyproject.toml           # Configuración de uv y dependencias
-└── README.md                # Documentación del proyecto
+├── app/                  # Aplicación Web (Shiny for Python)
+│   ├── app.py            # Lógica del servidor y UI
+│   └── components/       # Componentes de UI reutilizables
+├── data/                 # Volúmenes de datos (gestionados por Docker)
+│   ├── raw/              # Datos crudos (CSV, YAML)
+│   ├── processed/        # Datos transformados (Parquet)
+│   ├── external/         # Capas geográficas (Barrios, Censo)
+│   └── cache/            # Bases de datos SQLite (Geocoding, OSM)
+├── src/                  # Código fuente del ETL
+│   ├── config.py         # Configuración centralizada (Pydantic)
+│   ├── etl/              # Pipelines de Datos
+│   │   ├── ads/          # Pipeline de Anuncios (Extract, Geocode, Transform)
+│   │   ├── pois/         # Pipeline de POIs (Clustering DBSCAN)
+│   │   └── population/   # Pipeline de Población (Censo + H3 Reach)
+│   └── utils/            # Utilidades espaciales y de logging
+├── tests/                # Tests unitarios e integración
+├── Dockerfile            # Imagen base (Python 3.11 + uv)
+├── docker-compose.yml    # Orquestación de servicios
+└── Makefile              # Entrypoints para comandos comunes
+
+```
+
+## 🛠 Tech Stack
+
+* **Lenguaje:** Python 3.11
+* **Gestión de Paquetes:** `uv` (Astral)
+* **Contenerización:** Docker & Docker Compose
+* **Procesamiento:** Pandas, Geopandas, DuckDB (OLAP local), Shapely
+* **Espacial:** H3 (Uber), OSMnx, Scikit-learn (DBSCAN)
+* **Dashboard:** Shiny for Python, Folium, Plotly Express
+* **Testing:** Pytest, Pytest-mock
+
+## 🚀 Instalación y Despliegue con Docker
+
+El proyecto está totalmente contenedorizado. Se utiliza `uv` para una gestión de dependencias rápida dentro de la imagen.
+
+1. **Clonar el Repositorio:**
+```bash
+git clone "https://github.com/tu_usuario/ba_ooh_ads.git"
+cd ba_ooh_ads
+
+```
+
+2. **Configurar Variables de Entorno (Opcional):**
+El proyecto utiliza `pydantic-settings` en `src/config.py`. Por defecto, los paths son relativos a la raíz del proyecto. Si necesitas cambiar directorios o configurar credenciales futuras, crea un archivo `.env` en la raíz.
+3. **Construir y Ejecutar el Pipeline ETL:**
+Utilizamos un `Makefile` para simplificar la orquestación.
+* **Construir la imagen:**
+```bash
+make build
+
+```
+
+* **Ejecutar el Pipeline Completo:**
+Este comando descarga capas administrativas, procesa anuncios (incluyendo geocoding), extrae POIs, calcula clusters y cruza datos censales.
+```bash
+make etl-full
+
+```
+
+> **Nota:** La primera ejecución puede demorar debido a la descarga de datos censales y el proceso de geocodificación. Las ejecuciones subsiguientes son rápidas gracias al caché en SQLite.
+
+
+* **Ejecutar pasos individuales (Ejemplos):**
+```bash
+make layers       # Solo capas administrativas
+make ads          # Solo padrón de anuncios
+make osm_pois     # Solo POIs y Clustering
+make popu_reach   # Solo cálculo de alcance poblacional
+
 ```
 
 
+4. **Desplegar la Visualización:**
+Levanta el servidor de Shiny for Python.
+```bash
+make up
+
+```
+
+Accedé al dashboard desde el navegador ingresando en: `http://localhost:8000`
+
+
+## 🧬 Arquitectura y Flujo de Datos
+
+El sistema integra flujos asincrónicos de datos espaciales que convergen en un dataset consolidado.
+
+### Diagrama de Flujo del Pipeline ETL
+
+```mermaid
+flowchart LR
+    subgraph Sources["Fuentes de Datos"]
+        direction TB
+        S_ADS[("Padrón Anuncios<br>(CSV GCBA)")]
+        S_OSM[("OpenStreetMap<br>(Overpass API)")]
+        S_CENSO[("Censo 2022 + SUBE<br>(S3/DuckDB)")]
+        S_ADMIN[("Capas Admin<br>(GeoJSON)")]
+    end
+
+    subgraph Processing["Procesamiento & Transformación"]
+        direction TB
+        
+        %% Track Anuncios
+        GEOCODE("Geocoding Service<br>(Photon + SQLite Cache)")
+        SPATIAL_JOIN("Spatial Enirchment<br>(Barrios/Zonificación)")
+        
+        %% Track POIs
+        CLUSTERING("DBSCAN Clustering<br>(Global & Temático)")
+        
+        %% Track Población
+        H3_GRID("H3 Gridding<br>(Interpolación Areal)")
+        REACH("Reach Calculation<br>(Residente + Circulante)")
+    end
+
+    subgraph Consolidation["Consolidación"]
+        MERGE{{"Consolidate Ads"}}
+        FINAL_DB[("Tablero Consolidado<br>(Parquet)")]
+    end
+
+    %% Relaciones
+    S_ADS --> GEOCODE --> SPATIAL_JOIN
+    S_ADMIN --> SPATIAL_JOIN
+    
+    S_OSM --> CLUSTERING
+    
+    S_CENSO --> H3_GRID --> REACH
+    
+    SPATIAL_JOIN --> MERGE
+    CLUSTERING --> MERGE
+    REACH --> MERGE
+    
+    MERGE --> FINAL_DB
+
+    %% Estilos
+    classDef source fill:#e1f5fe,stroke:#01579b
+    classDef process fill:#fff3e0,stroke:#e65100
+    classDef db fill:#e8f5e9,stroke:#2e7d32
+    
+    class S_ADS,S_OSM,S_CENSO,S_ADMIN source
+    class GEOCODE,SPATIAL_JOIN,CLUSTERING,H3_GRID,REACH process
+    class FINAL_DB,MERGE db
+
+```
+
+### Descripción de Scripts Principales
+
+* **`src/etl/ads/geocoding_ads.py`**: Implementa un servicio de geocodificación con "cache-aside". Antes de consultar la API externa (Photon), verifica si la dirección ya existe en una base de datos local SQLite (`geocache.db`), reduciendo drásticamente los tiempos de re-procesamiento.
+* **`src/etl/pois/centrality_clustering.py`**: Aplica el algoritmo no supervisado **DBSCAN** sobre los Puntos de Interés (POIs) de OSM. Genera polígonos (Concave Hulls) que representan zonas comerciales ("clusters") globales y temáticas (ej: polos gastronómicos).
+* **`src/etl/population/population_reach.py`**: Utiliza **DuckDB** para procesar grandes volúmenes de datos censales (residentes) y transaccionales de transporte (circulantes). Interpola estos datos a una grilla hexagonal **H3 (Resolución 9)** para estimar la audiencia potencial de cada ubicación.
+* **`src/etl/ads/consolidate_ads.py`**: Es el paso final del ETL. Cruza los anuncios geolocalizados con los clusters comerciales y métricas de alcance poblacional (K-Ring neighbors) para generar el archivo `tablero_anuncios_consolidado.parquet`.
+
+### Modelo de Datos Consolidado
+
+El archivo final `.parquet` es una tabla desnormalizada ("One Big Table") optimizada para lecturas rápidas en el dashboard:
+
+| Campo | Tipo | Descripción |
+| --- | --- | --- |
+| `id_anuncio` | Int | Identificador único del cartel. |
+| `lat`, `long` | Float | Coordenadas geográficas. |
+| `full_address` | String | Dirección normalizada. |
+| `tipo`, `clase` | String | Atributos físicos del cartel (Pantalla, Frontal, etc.). |
+| `barrio`, `comuna` | String | Datos administrativos (Spatial Join). |
+| `cluster_global` | Int | ID del cluster comercial general al que pertenece. |
+| `cluster_tematico` | Int | ID del cluster específico (ej: Gastronomía). |
+| `total_reach` | Int | Estimación de personas (residentes + circulantes) en el área de influencia. |
+| `h3_index` | String | Índice hexagonal H3. |
+
+## 🗃️ Visualización con Shiny
+
+La aplicación (`app/app.py`) consume el parquet consolidado y expone una interfaz reactiva utilizando **Shiny for Python**.
+
+* **Frontend:**
+  * **Mapas:** Utiliza **Folium** para renderizado de mapas estables y ligeros (HTML), con clustering de marcadores para manejar alta densidad de puntos.
+  * **Gráficos:** Implementa **Plotly Express** para visualizaciones interactivas de alcance demográfico, renderizadas como HTML estático (para máxima compatibilidad en contenedores).
+  * **UI:** Sistema de filtros reactivos avanzados, modo oscuro y paneles flotantes de detalle.
+* **Backend:** Utiliza **DuckDB** en memoria para filtrar y agregar datos en tiempo real según las interacciones del usuario en el sidebar (filtrado por tipo, características, metros cuadrados, etc.).
+* **Interactividad:**
+  * **Bridge JS:** Comunicación bidireccional personalizada entre el mapa Folium y el servidor Shiny.
+  * **Análisis Drawer:** Al seleccionar un anuncio en el mapa, un panel lateral despliega el perfil completo, metadatos y un desglose demográfico del alcance (residentes vs circulantes) por rango etario y género.
+
+![Vista del Dashboard con Panel de Análisis](docs/img/captura_shiny.png)
+
+
+## 🧪 Testing
+
+El proyecto cuenta con una suite de pruebas robusta ubicada en `tests/`, ejecutada con `pytest`.
+
+* **Unit Tests (`tests/unit/`):** Validan la lógica aislada. Ej: `test_geocoding_service.py` verifica que el sistema use la caché SQLite antes de llamar a la API; `test_spatial.py` valida las funciones de conversión H3 y joins espaciales.
+* **Integration Tests (`tests/integration/`):** Validan flujos completos. Ej: `test_ads_pipeline.py` simula una ejecución end-to-end del módulo de anuncios usando datos mockeados y un sistema de archivos virtual.
+* **Ejecución:**
+```bash
+# Ejecutar todos los tests dentro del contenedor
+docker-compose run --rm app pytest
+
+```
+
+
+
+## 🔗 Enlaces Útiles
+
+* **Fuentes de Datos:**
+* [BA Data: Padrón de Anuncios](https://www.google.com/search?q=https://data.buenosaires.gob.ar/dataset/padron-anuncios-empadronados)
+* [INDEC: Censo Nacional 2022](https://www.indec.gob.ar/indec/web/Nivel4-Tema-2-41-165)
+* [Transporte: Viajes SUBE](https://data.buenosaires.gob.ar/dataset/viajes-etapas-transporte-publico)
+
+
+* **Documentación Técnica:**
+* [H3: Uber’s Hexagonal Hierarchical Spatial Index](https://h3geo.org/)
+* [Shiny for Python](https://shiny.posit.co/py/)
+* [OSMnx: Python for Street Networks](https://osmnx.readthedocs.io/)
 ```
 
 # ==========================================
@@ -277,11 +479,12 @@ El resultado final será un tablero interactivo en Shiny for Python que permita 
 - **Gestión de Paquetes:** `uv` (Reemplaza a pip/poetry).
 - **Infraestructura:** Docker y Docker Compose (Multi-stage builds).
 - **Base de Datos (Cache):** SQLite (local, sin servidor) para cachear geocoding.
-- - **Base de Datos (OLAP):** `DuckDB` (para procesamiento eficiente de datos censales y parquets).
+- **Base de Datos (OLAP):** `DuckDB` (para procesamiento eficiente de datos censales y parquets).
 - **Geospatial:** `geopandas`, `shapely`, `h3` (Uber), `osmnx`.
-- **Frontend / Dashboard:** `Shiny for Python` + `ipyleaflet` / `folium`.
+- **Frontend / Dashboard:** `Shiny for Python` + `folium` (visualización de mapas con HTML estático).
 - **Orquestación:** Scripts modulares (`src/etl/*.py`) + `Makefile`.
-- - **Testing:** `pytest`, `pytest-mock`.
+- **Testing:** `pytest`, `pytest-mock`.
+- **Configuración:** `pydantic-settings`.
 
 ## 3. Arquitectura del Proyecto
 El proyecto sigue una estructura modular, separando responsabilidades por dominio conceptual:
@@ -299,17 +502,20 @@ ba_ooh_ads/
 │   │   │   └── consolidate_ads.py
 │   │   ├── pois/               # Datos de OpenStreetMap
 │   │   │   ├── extract_osm_pois.py
+│   │   │   ├── pois_macro_categories.py
 │   │   │   └── centrality_clustering.py (DBSCAN)
 │   │   └── population/         # Datos Censales y Administrativos
 │   │       ├── extract_govmaps.py
+│   │       ├── extract_census_data.py
 │   │       └── population_reach.py (Censo + Movilidad + H3)
 │   └── utils/                  # Funciones auxiliares (spatial, logging)
 ├── app/                        # Aplicación Shiny (Fuera de src para despliegue limpio)
 │   ├── app.py                  # Entrypoint
-│   ├── ui.py                   # Definición de interfaz
-│   └── server.py               # Lógica reactiva
-├── tests/                      # Tests unitarios e integración
-├── Dockerfile                  # Multi-stage build con uv
+│   └── components/             # (Pendiente) Módulos de UI
+├── tests/                      # Suite de pruebas
+│   ├── integration/            # Tests end-to-end del pipeline
+│   ├── unit/                   # Tests unitarios de funciones y servicios
+│   └── conftest.py             # Fixtures y configuración de entorno fake├── Dockerfile                  # Multi-stage build con uv
 ├── docker-compose.yml          # Montaje de volúmenes y servicios
 ├── pyproject.toml              # (Asumo que existe por usar 'uv')
 └── Makefile                    # Entrypoints (make etl-full, make app, etc.)
@@ -318,9 +524,9 @@ ba_ooh_ads/
 ## 4. Reglas de Desarrollo (Guidelines)
 ### A. Ingeniería de Software
 - **Typing:** Uso estricto de Type Hints (def func(a: str) -> int:).
-- **Paths:** Uso obligatorio de pathlib.Path, nunca strings para rutas de archivos.
+- **Paths:** Uso obligatorio de pathlib.Path, a través de src.config.settings, nunca strings para rutas de archivos.
 - **Logging:** Usar módulo logging, prohibido usar print en scripts de producción.
-- **Config:** Las constantes van en variables o config files, no hardcodeadas.
+- **Config:** Las constantes van en variables o config files, no hardcodeadas. Se gestionan en src/config.py usando Pydantic.
 
 ### B. Geocodificación 
 - Usar siempre la clase GeocodingService en src/etl/geocoding_ads.py.
@@ -332,10 +538,12 @@ ba_ooh_ads/
 - **Persistencia:** Los datos intermedios y finales se guardan en .parquet (preserva tipos), nunca en .csv.
 - **Tipos de Datos:** Usar tipos "nullable" de pandas (Int64, Float64) para columnas numéricas con faltantes.
 - **Normalización:** Las direcciones se normalizan (Avda -> Avenida) antes de geocodificar.
+- **DuckDB**: Utilizar DuckDB para consultas pesadas sobre parquets (ej. Censo).
 
 ### D. Testing (Nueva fase)
 - Usar pytest para la suite de pruebas.
 - Priorizar tests para funciones puras de transformación y lógica espacial.
+- Mockear llamadas a APIs externas (OSM, Geocoding) y sistemas de archivos en los tests.
 
 ### 5. Estado Actual
 ✅ Realizado
@@ -348,29 +556,57 @@ ba_ooh_ads/
 - **Refactor Configuración**: Se centralizando variables en src/config.py
   -Debemos eliminar los `Path("data/processed")` repetidos.
   - Tarea: Crear `src/config.py` usando `pydantic-settings` o una clase simple.
-- **Infraestructura App**: Corregir Dockerfile para soportar Shiny en lugar de Streamlit. 
+- **Infraestructura App**: Corregir Dockerfile para soportar Shiny en lugar de Streamlit.
+- **Testing**: Suite de pruebas implementada con tests unitarios (geocoding, utils) e integración (pipeline de ads) usando mocks. 
 * 
 🚧 Próximos Objetivos (Roadmap Restante)
-1. **Quality Assurance (Testing)**
-Desarrollo de tests unitarios para garantizar la robustez del ETL antes del despliegue final.
-Crear tests para utils_spatial.py (conversiones H3).
-Mockear APIs para testear extract_ads.py y geocoding_ads.py sin hacer peticiones reales.
-Validar la integridad referencial de los ids en el proceso de consolidación.
 
-1. Visualización (Shiny Dashboard)
-Desarrollo de la interfaz de usuario en src/app/ (o directorio app/) utilizando Shiny for Python.
+1. Documentación Final
+- Actualizar README con instrucciones de despliegue (Local vs Docker).
 
-**Requerimientos del Tablero**:
-Insumo: data/processed/tablero_anuncios_consolidado.parquet.
-Layout: Panel Principal: Mapa interactivo (folium o leaflet) mostrando los anuncios como puntos/clusters.
-Sidebar (Izquierda): Panel de filtros reactivos.
-**Filtros requeridos**:
-Dimensiones del Anuncio: clase, tipo, caracteristica, metros.
-Ubicación Administrativa: nombre (barrio), comuna_left (comuna), distrito_desc (zonificación).
-Contexto Urbano: cluster_global, cluster_tematico.
-Categoría comercial cercana: macro_category.
+2. Visualización (Shiny Dashboard) - **EN PROGRESO**
 
-Interacciones: Al filtrar en el sidebar, el mapa y los KPIs (si los hubiera) deben actualizarse instantáneamente.
+✅ **Completado:**
+- Backend (app.py) conecta exitosamente con DuckDB vía queries SQL.
+- Mapa interactivo renderizado con **Folium** (HTML estático, 100% confiable).
+- Sidebar con filtros reactivos implementados:
+  - Clase, Tipo, Característica (checkbox groups).
+  - Geocodificación (needs_geocoding).
+  - Metros cuadrados (slider de rango).
+- Queries dinámicas a DuckDB basadas en selección de filtros.
+- MarkerCluster implementado para agrupación automática de puntos.
+- Popups HTML personalizados mostrando información básica de cada anuncio.
+- Contador de registros en el header del mapa.
+
+🔧 **Tareas Pendientes de Frontend:**
+- Agregar filtros adicionales:
+  - Barrio (`nombre`), Comuna (`comuna_left`), Zonificación (`distrito_desc`).
+  - Contexto urbano: `cluster_global`, `cluster_tematico`.
+  - Categoría comercial: `macro_category`.
+- Implementar lógica de color en el mapa:
+  - Diferenciar puntos por `clase` o `cluster_global`.
+  - Leyenda interactiva.
+- Agregar métricas KPI en tarjetas superiores:
+  - Total de anuncios visibles.
+  - Suma de metros cuadrados.
+  - Alcance poblacional estimado (si disponible en el dataset).
+- Mejorar diseño de popups:
+  - Incluir `id`, `caracteristica`, `metros`, `barrio`, `cluster_global`.
+  - Agregar iconos o badges visuales.
+- Optimización de performance:
+  - Implementar paginación o límites inteligentes para datasets grandes (>500 puntos).
+  - Cachear queries repetitivas.
+
+**Filtros Implementados:**
+- ✅ `clase`, `tipo`, `caracteristica`, `needs_geocoding`, `metros` (rango).
+
+**Filtros Pendientes:**
+- ⏳ `nombre` (barrio), `comuna_left`, `distrito_desc`, `cluster_global`, `cluster_tematico`, `macro_category`.
+
+**Interacciones Funcionales:**
+✅ Al filtrar en el sidebar, el mapa se regenera instantáneamente.
+✅ Al hacer clic en un marcador, se despliega un popup con información del anuncio.
+✅ El clustering agrupa puntos automáticamente según el nivel de zoom. 
 
 
 ```
@@ -2763,90 +2999,843 @@ def _safe_read_shapefile(shp_path: str) -> gpd.GeoDataFrame:
 # FILE: app/app.py
 # ==========================================
 ```python
+import logging
+import json
 from pathlib import Path
-from shiny import App, ui
-from shinywidgets import output_widget, render_widget
-import ipyleaflet as L
-import duckdb
+from typing import Any
 
-# Ruta al archivo consolidado (asumiendo que se ejecuta desde la raíz del proyecto o workdir configurado en Docker)
-# En Docker, workdir es /app, y data está en /app/data.
+import duckdb
+import pandas as pd
+import folium
+from folium.plugins import MarkerCluster
+from shiny import App, reactive, ui, render
+# from shinywidgets import output_widget, render_widget  # Removed to avoid anywidget runtime errors
+import plotly.express as px
+from htmltools import HTML as shiny_HTML, div, strong
+
+# --- Logging Configuration ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+# --- Data Path Configuration ---
 DATA_PATH = Path("data/processed/tablero_anuncios_consolidado.parquet")
 
-app_ui = ui.page_fluid(
+# --- Helper Functions ---
+def load_filter_options() -> dict[str, Any]:
+    """Carga opciones de filtros desde el parquet de manera segura."""
+    defaults = {
+        "clase": [], "tipo": [], "caracteristica": [], 
+        "needs_geocoding": [], "metros_min": 0, "metros_max": 100,
+    }
+    
+    if not DATA_PATH.exists():
+        return defaults
+    
+    try:
+        con = duckdb.connect(database=":memory:")
+        clase_values = [row[0] for row in con.execute(f"SELECT DISTINCT clase FROM '{DATA_PATH}' WHERE clase IS NOT NULL ORDER BY clase").fetchall()]
+        tipo_values = [row[0] for row in con.execute(f"SELECT DISTINCT tipo FROM '{DATA_PATH}' WHERE tipo IS NOT NULL ORDER BY tipo").fetchall()]
+        caract_values = [row[0] for row in con.execute(f"SELECT DISTINCT caracteristica FROM '{DATA_PATH}' WHERE caracteristica IS NOT NULL ORDER BY caracteristica").fetchall()]
+        needs_geocoding_values = [str(row[0]) for row in con.execute(f"SELECT DISTINCT needs_geocoding FROM '{DATA_PATH}' WHERE needs_geocoding IS NOT NULL ORDER BY needs_geocoding").fetchall()]
+        metros_range = con.execute(f"SELECT MIN(metros), MAX(metros) FROM '{DATA_PATH}' WHERE metros IS NOT NULL").fetchone()
+        con.close()
+        
+        return {
+            "clase": clase_values, "tipo": tipo_values, "caracteristica": caract_values,
+            "needs_geocoding": needs_geocoding_values,
+            "metros_min": int(metros_range[0]) if metros_range and metros_range[0] else 0,
+            "metros_max": int(metros_range[1]) if metros_range and metros_range[1] else 100,
+        }
+    except Exception as e:
+        logger.error(f"Error loading filter options: {e}")
+        return defaults
+
+FILTER_OPTIONS = load_filter_options()
+
+# --- UI Definition ---
+app_ui = ui.page_fillable(
+
+#Cargar librerías JS globales ---
+    ui.tags.head(
+        # Cargamos Plotly manualmente al principio para evitar Race Conditions
+        ui.tags.script(src="https://cdn.plot.ly/plotly-2.35.2.min.js")
+    ),
+
+    # Custom CSS for the absolute panel
+    ui.tags.style("""
+        #details_panel {
+            transition: transform 0.3s ease-in-out;
+            z-index: 1000;
+            background-color: var(--bs-body-bg); 
+            padding: 15px; 
+            border-radius: 8px; 
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1); 
+            display: none; 
+            max-height: 90vh; 
+            overflow-y: auto; 
+            border: 1px solid var(--bs-border-color);
+        }
+        .folium_btn {
+            background-color: #2563eb;
+            color: white;
+            padding: 5px 10px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 5px;
+            font-size: 0.85em;
+        }
+        .folium_btn:hover {
+            background-color: #1d4ed8;
+        }
+    """),
+    
+    # Custom JS to properly handle resizing and messaging from Folium popup
+    ui.tags.script("""
+        // Function to be called from the Folium Popup button
+        window.selectAd = function(id) {
+            Shiny.setInputValue('selected_ad_id', id, {priority: 'event'});
+        };
+    """),
+
+    ui.layout_sidebar(
+        ui.sidebar(
+            ui.h4("Filtros"),
+            ui.input_dark_mode(id="dark_mode"),
+            ui.hr(),
+            ui.input_checkbox_group("clase_filter", "Clase:", choices=FILTER_OPTIONS["clase"], selected=FILTER_OPTIONS["clase"]),
+            ui.hr(),
+            ui.input_checkbox_group("tipo_filter", "Tipo:", choices=FILTER_OPTIONS["tipo"], selected=FILTER_OPTIONS["tipo"]),
+            ui.input_action_button("btn_clear_tipo", "Limpiar Tipo", class_="btn-xs btn-light"),
+            ui.hr(),
+            ui.input_selectize("caracteristica_filter", "Característica:", choices=FILTER_OPTIONS["caracteristica"], multiple=True, options={"placeholder": "Seleccionar..."}),
+            ui.hr(),
+            ui.input_checkbox_group("needs_geocoding_filter", "Geocodificación:", choices=FILTER_OPTIONS["needs_geocoding"], selected=FILTER_OPTIONS["needs_geocoding"]),
+            ui.hr(),
+            ui.input_slider("metros_filter", "Metros²:", min=FILTER_OPTIONS["metros_min"], max=FILTER_OPTIONS["metros_max"], value=[FILTER_OPTIONS["metros_min"], FILTER_OPTIONS["metros_max"]], step=1),
+            width=300, 
+            open="desktop",
+        ),
+        
+        ui.card(
+            ui.card_header(ui.output_text("map_header")),
+            ui.output_ui("map_output"),
+            full_screen=True, fill=True, style="padding: 0;"
+        ),
+    ),
+    
+    # Absolute panel for details (Analysis Drawer)
+    ui.panel_absolute(
+        ui.div(
+            ui.div(
+                ui.h4("Detalle del Anuncio", style="display: inline-block;"),
+                ui.input_action_button("btn_close_panel", "✕", class_="btn-sm btn-light", style="float: right; border: none;"),
+                style="margin-bottom: 10px;"
+            ),
+            ui.output_ui("ad_metadata"),
+            ui.hr(),
+            ui.h5("Estimación de Alcance (Reach)"),
+            ui.output_ui("reach_chart"),
+        ),
+        id="details_panel",
+        top="50px", right="20px", width="450px",
+        draggable=True,
+    ),
+)
+
+# --- SERVER LOGIC ---
+def server(input, output, session):
+    
+    # Reactive value to store selected Ad ID
+    selected_ad = reactive.Value(None)
+    
+    # --- Capture Selection from Folium Popup ---
+    @reactive.effect
+    @reactive.event(input.selected_ad_id)
+    def _():
+        val = input.selected_ad_id()
+        if val:
+            selected_ad.set(val)
+
+    # --- Filter Logic ---
+    @reactive.effect
+    @reactive.event(input.btn_clear_tipo)
+    def _():
+        ui.update_checkbox_group("tipo_filter", selected=[])
+
+    @reactive.effect
+    @reactive.event(input.btn_close_panel)
+    def _():
+        selected_ad.set(None)
+
+    # Observer to show/hide panel based on selection
+    @reactive.effect
+    def _():
+        if selected_ad.get() is not None:
+             ui.insert_ui(
+                ui.tags.script("document.getElementById('details_panel').style.display = 'block';"),
+                selector="body", where="beforeEnd", immediate=True
+            )
+        else:
+            ui.insert_ui(
+                ui.tags.script("document.getElementById('details_panel').style.display = 'none';"),
+                selector="body", where="beforeEnd", immediate=True
+            )
+
+    @reactive.calc
+    def filtered_data() -> list[tuple]:
+        if not DATA_PATH.exists(): return []
+        
+        s_clase = list(input.clase_filter())
+        s_tipo = list(input.tipo_filter())
+        s_caract = list(input.caracteristica_filter())
+        s_geo = list(input.needs_geocoding_filter())
+        r_metros = input.metros_filter()
+        
+        clauses = ["lat IS NOT NULL", "long IS NOT NULL"]
+
+        if not s_clase or not s_tipo: return []
+        
+        if s_clase: clauses.append(f"clase IN ({', '.join([f'{chr(39)}{c}{chr(39)}' for c in s_clase])})")
+        if s_tipo: clauses.append(f"tipo IN ({', '.join([f'{chr(39)}{t}{chr(39)}' for t in s_tipo])})")
+        if s_caract: clauses.append(f"caracteristica IN ({', '.join([f'{chr(39)}{c}{chr(39)}' for c in s_caract])})")
+        if r_metros: clauses.append(f"metros BETWEEN {r_metros[0]} AND {r_metros[1]}")
+        
+        if s_geo:
+            conds = []
+            for v in s_geo:
+                v_s = str(v).lower()
+                if v_s == 'true': conds.append("needs_geocoding = TRUE")
+                elif v_s == 'false': conds.append("needs_geocoding = FALSE")
+                else: conds.append(f"needs_geocoding = '{v}'")
+            if conds: clauses.append(f"({' OR '.join(conds)})")
+        else:
+            return []
+
+        # Include nro_anuncio (ID)
+        query = f"""
+            SELECT lat, long, clase, tipo, full_address, barrio_desc, nro_anuncio, metros
+            FROM '{DATA_PATH}'
+            WHERE {" AND ".join(clauses)}
+            LIMIT 1000
+        """
+        
+        try:
+            con = duckdb.connect(database=":memory:")
+            rows = con.execute(query).fetchall()
+            con.close()
+            return rows
+        except Exception as e:
+            logger.error(f"Query Error: {e}")
+            return []
+
+    # --- Map Renderer (Folium) ---
+    @output
+    @render.ui
+    def map_output():
+        data = filtered_data()
+        
+        # Create map
+        m = folium.Map(
+            location=[-34.6037, -58.3816],
+            zoom_start=12,
+            tiles='CartoDB positron',
+            width='100%',
+            height='100%'
+        )
+        
+        marker_cluster = MarkerCluster().add_to(m)
+        
+        marker_count = 0
+        for row in data:
+            try:
+                # Ensure float casting
+                raw_lat, raw_lon = row[0], row[1]
+                clase, tipo, addr, barrio, ad_id, metros = row[2], row[3], row[4], row[5], row[6], row[7]
+                
+                if isinstance(raw_lat, str): raw_lat = raw_lat.replace(',', '.')
+                if isinstance(raw_lon, str): raw_lon = raw_lon.replace(',', '.')
+                lat, lon = float(raw_lat), float(raw_lon)
+                
+                if lat == 0 or lon == 0: continue
+                if not (-34.7 < lat < -34.5 and -58.5 < lon < -58.3): continue 
+                
+                # Hybrid Logic: Popup with HTML Button triggers JS function defined in UI
+                popup_html = f"""
+                <div style='min-width: 200px; font-family: sans-serif; font-size: 14px;'>
+                    <strong style='color: #1e40af;'>{clase}</strong><br>
+                    <span style='color: #666;'>{tipo}</span><br>
+                    <div style='margin-top: 4px; font-size: 12px;'>
+                        {addr}<br>
+                        <em>{barrio}</em>
+                    </div>
+                    <button class="folium_btn" onclick="parent.selectAd('{ad_id}')">
+                        📊 Ver Análisis
+                    </button>
+                </div>
+                """
+                
+                color = '#dc2626' if clase == 'Cartelera' else '#2563eb'
+                
+                folium.CircleMarker(
+                    location=[lat, lon],
+                    radius=6,
+                    color=color,
+                    fill=True,
+                    fill_color=color,
+                    fill_opacity=0.7,
+                    weight=1,
+                    popup=folium.Popup(popup_html, max_width=300)
+                ).add_to(marker_cluster)
+                
+                marker_count += 1
+                
+            except Exception as e:
+                continue
+        
+        logger.info(f"Generated Folium map with {marker_count} markers")
+        return shiny_HTML(m._repr_html_())
+
+    @output
+    @render.text 
+    def map_header():
+        count = len(filtered_data())
+        sel = selected_ad.get()
+        txt = f"Mapa de Anuncios ({count} visibles)"
+        if sel:
+            txt += f" - Seleccionado: {sel}"
+        return txt
+
+    # --- Detail Logic ---
+    @reactive.calc
+    def ad_details_data():
+        ad_id = selected_ad.get()
+        if not ad_id: return None
+        
+        try:
+            con = duckdb.connect(database=":memory:")
+            df = con.execute(f"SELECT * FROM '{DATA_PATH}' WHERE nro_anuncio = ?", [ad_id]).df()
+            con.close()
+            if df.empty: return None
+            return df.iloc[0]
+        except Exception as e:
+            logger.error(f"Error fetching details: {e}")
+            return None
+
+    @output
+    @render.ui
+    def ad_metadata():
+        row = ad_details_data()
+        if row is None: return div("Seleccione un anuncio en el mapa")
+        
+        def item(label, val):
+            return div(strong(f"{label}: "), str(val), style="margin-bottom: 4px;")
+            
+        return div(
+            item("ID", row['nro_anuncio']),
+            item("Dirección", row['full_address']),
+            item("Barrio", row['barrio_desc']),
+            item("Comuna", row['comuna_desc']),
+            item("Zonificación", row.get('distrito_desc', 'N/A')),
+            item("Clase", row['clase']),
+            item("Tipo", row['tipo']),
+            item("Característica", row['caracteristica']),
+            item("Metros", f"{row['metros']} m²"),
+            style="font_size: 0.9em;"
+        )
+
+    @output
+    @render.ui
+    def reach_chart():
+        row = ad_details_data()
+        if row is None: return None
+        
+        # Parse logic for Reach columns (same as before)
+        keys = row.index.tolist()
+        import re
+        regex = re.compile(r"(hombres|mujeres)_(residentes|circulante)_age_(.*)_1ring")
+        
+        data_points = []
+        for k in keys:
+            match = regex.match(k)
+            if match:
+                sexo = match.group(1).capitalize()
+                tipo_pob = match.group(2).capitalize()
+                edad = match.group(3).replace('_', ' ')
+                valor = row[k]
+                
+                if valor > 0:
+                    data_points.append({
+                        "Edad": edad,
+                        "Población": valor,
+                        "Grupo": f"{tipo_pob} ({sexo})"
+                    })
+        
+        if not data_points:
+            return div("No hay datos demográficos pormenorizados para este punto.")
+            
+        df_plot = pd.DataFrame(data_points)
+        
+        # Obtenemos el total para el título HTML
+        total_reach = int(row.get('total_reach_1ring', 0))
+
+        fig = px.bar(
+            df_plot, 
+            x="Edad", 
+            y="Población", 
+            color="Grupo", 
+            # title=...  <-- ELIMINAMOS EL TÍTULO INTERNO DE PLOTLY
+            labels={"Población": "Personas", "Edad": "Rango Etario"},
+            category_orders={"Edad": sorted(df_plot["Edad"].unique()) if not df_plot.empty else []},
+            template="plotly_dark" if input.dark_mode() == "dark" else "plotly"
+        )
+        
+        fig.update_layout(
+            barmode='stack', 
+            # Ajustamos márgenes ya que no hay título ocupando espacio arriba
+            margin=dict(l=10, r=10, t=30, b=10), 
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+        
+        # Retornamos un DIV con el Título HTML arriba y el Gráfico abajo
+        return div(
+            ui.h4(f"Total: {total_reach:,} personas", style="text-align: center; margin-bottom: 10px; margin-top: 5px;"),
+            shiny_HTML(fig.to_html(include_plotlyjs=False, full_html=False, config={'displayModeBar': False}))
+        )
+
+app = App(app_ui, server)
+```
+
+# ==========================================
+# FILE: app/app_folium_backup.py
+# ==========================================
+```python
+import logging
+from pathlib import Path
+from typing import Any
+
+import duckdb
+import folium
+from folium.plugins import MarkerCluster
+from shiny import App, reactive, ui, render
+from htmltools import HTML as shiny_HTML
+
+# --- Logging Configuration ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+# --- Data Path Configuration ---
+DATA_PATH = Path("data/processed/tablero_anuncios_consolidado.parquet")
+
+# --- Helper Functions ---
+def load_filter_options() -> dict[str, Any]:
+    """Carga opciones de filtros desde el parquet de manera segura."""
+    defaults = {
+        "clase": [], "tipo": [], "caracteristica": [], 
+        "needs_geocoding": [], "metros_min": 0, "metros_max": 100,
+    }
+    
+    if not DATA_PATH.exists():
+        return defaults
+    
+    try:
+        con = duckdb.connect(database=":memory:")
+        clase_values = [row[0] for row in con.execute(f"SELECT DISTINCT clase FROM '{DATA_PATH}' WHERE clase IS NOT NULL ORDER BY clase").fetchall()]
+        tipo_values = [row[0] for row in con.execute(f"SELECT DISTINCT tipo FROM '{DATA_PATH}' WHERE tipo IS NOT NULL ORDER BY tipo").fetchall()]
+        caract_values = [row[0] for row in con.execute(f"SELECT DISTINCT caracteristica FROM '{DATA_PATH}' WHERE caracteristica IS NOT NULL ORDER BY caracteristica").fetchall()]
+        needs_geocoding_values = [str(row[0]) for row in con.execute(f"SELECT DISTINCT needs_geocoding FROM '{DATA_PATH}' WHERE needs_geocoding IS NOT NULL ORDER BY needs_geocoding").fetchall()]
+        metros_range = con.execute(f"SELECT MIN(metros), MAX(metros) FROM '{DATA_PATH}' WHERE metros IS NOT NULL").fetchone()
+        con.close()
+        
+        return {
+            "clase": clase_values, "tipo": tipo_values, "caracteristica": caract_values,
+            "needs_geocoding": needs_geocoding_values,
+            "metros_min": int(metros_range[0]) if metros_range and metros_range[0] else 0,
+            "metros_max": int(metros_range[1]) if metros_range and metros_range[1] else 100,
+        }
+    except Exception as e:
+        logger.error(f"Error loading filter options: {e}")
+        return defaults
+
+FILTER_OPTIONS = load_filter_options()
+
+# --- UI Definition ---
+app_ui = ui.page_fillable(
     ui.h2("BA OOH Ads - Explorer"),
-    ui.p("Visualización de anuncios publicitarios y alcance poblacional."),
+    ui.p("Visualización de anuncios en CABA"),
     
     ui.layout_sidebar(
         ui.sidebar(
             ui.h4("Filtros"),
-            ui.markdown("_Cargando datos via DuckDB..._"),
-            ui.p("Mostrando muestra de 100 registros")
+            ui.input_checkbox_group("clase_filter", "Clase:", choices=FILTER_OPTIONS["clase"], selected=FILTER_OPTIONS["clase"]),
+            ui.hr(),
+            ui.input_checkbox_group("tipo_filter", "Tipo:", choices=FILTER_OPTIONS["tipo"], selected=FILTER_OPTIONS["tipo"]),
+            ui.hr(),
+            ui.input_selectize("caracteristica_filter", "Característica:", choices=FILTER_OPTIONS["caracteristica"], multiple=True, options={"placeholder": "Seleccionar..."}),
+            ui.hr(),
+            ui.input_checkbox_group("needs_geocoding_filter", "Geocodificación:", choices=FILTER_OPTIONS["needs_geocoding"], selected=FILTER_OPTIONS["needs_geocoding"]),
+            ui.hr(),
+            ui.input_slider("metros_filter", "Metros²:", min=FILTER_OPTIONS["metros_min"], max=FILTER_OPTIONS["metros_max"], value=[FILTER_OPTIONS["metros_min"], FILTER_OPTIONS["metros_max"]], step=1),
+            width=280, open="desktop",
         ),
         ui.card(
-            output_widget("map_output"),
-            full_screen=True
-        )
-    )
+            ui.card_header(ui.output_text("map_header")),
+            ui.output_ui("map_output"),  # Cambio: output_ui en lugar de output_widget
+            full_screen=True, fill=True,
+        ),
+    ),
 )
 
+# --- SERVER LOGIC ---
 def server(input, output, session):
     
-    @render_widget
-    def map_output():
-        # 1. Inicializar mapa centrado en Buenos Aires
-        center = (-34.6037, -58.3816)
-        m = L.Map(center=center, zoom=12, scroll_wheel_zoom=True)
+    # Lógica de Datos
+    @reactive.calc
+    def filtered_data() -> list[tuple]:
+        if not DATA_PATH.exists(): return []
         
-        # Capa base limpia (CartoDB Positron)
-        carto_layer = L.TileLayer(
-            url='https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
-            attribution='&copy; OpenStreetMap &copy; CARTO'
-        )
-        m.clear_layers()
-        m.add_layer(carto_layer)
+        s_clase = list(input.clase_filter())
+        s_tipo = list(input.tipo_filter())
+        s_caract = list(input.caracteristica_filter())
+        s_geo = list(input.needs_geocoding_filter())
+        r_metros = input.metros_filter()
+        
+        clauses = ["lat IS NOT NULL", "long IS NOT NULL"]
 
-        # 2. Cargar datos usando DuckDB
-        if not DATA_PATH.exists():
-            print(f"Advertencia: No se encontró el archivo {DATA_PATH}. Asegúrate de ejecutar el ETL primero.")
-            # Retornar mapa vacío pero funcional
-            return m
+        if not s_clase or not s_tipo: return []
+        
+        if s_clase: clauses.append(f"clase IN ({', '.join([f'{chr(39)}{c}{chr(39)}' for c in s_clase])})")
+        if s_tipo: clauses.append(f"tipo IN ({', '.join([f'{chr(39)}{t}{chr(39)}' for t in s_tipo])})")
+        if s_caract: clauses.append(f"caracteristica IN ({', '.join([f'{chr(39)}{c}{chr(39)}' for c in s_caract])})")
+        if r_metros: clauses.append(f"metros BETWEEN {r_metros[0]} AND {r_metros[1]}")
+        
+        if s_geo:
+            conds = []
+            for v in s_geo:
+                v_s = str(v).lower()
+                if v_s == 'true': conds.append("needs_geocoding = TRUE")
+                elif v_s == 'false': conds.append("needs_geocoding = FALSE")
+                else: conds.append(f"needs_geocoding = '{v}'")
+            if conds: clauses.append(f"({' OR '.join(conds)})")
+        else:
+            return []
 
+        query = f"""
+            SELECT lat, long, clase, tipo, full_address, barrio_desc
+            FROM '{DATA_PATH}'
+            WHERE {" AND ".join(clauses)}
+            -- LIMIT 200
+        """
+        
         try:
-            # Conexión en memoria
             con = duckdb.connect(database=":memory:")
-            
-            # Query eficiente: solo leemos las columnas necesarias para el mapa
-            # Limitamos a 100 para prueba de concepto como se solicitó
-            query = f"""
-                SELECT lat, long
-                FROM '{DATA_PATH}'
-                WHERE lat IS NOT NULL AND long IS NOT NULL
-                LIMIT 100
-            """
-            
             rows = con.execute(query).fetchall()
             con.close()
-
-            # 3. Generar marcadores
-            markers = []
-            for lat, lon in rows:
-                # Leaflet espera tuplas (lat, lon)
-                markers.append(L.Marker(location=(lat, lon), draggable=False))
-            
-            # Agrupar marcadores para performance y limpieza visual
-            cluster = L.MarkerCluster(markers=markers)
-            m.add_layer(cluster)
-            
-            print(f"✅ Cargados {len(rows)} puntos en el mapa desde {DATA_PATH}.")
-
+            return rows
         except Exception as e:
-            print(f"❌ Error consultando DuckDB: {e}")
+            logger.error(f"Query Error: {e}")
+            return []
 
-        return m
+    # Renderizado del Mapa con Folium
+    @output
+    @render.ui
+    def map_output():
+        """Genera un mapa Folium con los datos filtrados."""
+        data = filtered_data()
+        
+        # Crear mapa base centrado en CABA
+        m = folium.Map(
+            location=[-34.6037, -58.3816],
+            zoom_start=12,
+            tiles='CartoDB positron',
+            width='100%',
+            height='800px'
+        )
+        
+        # Crear cluster de marcadores
+        marker_cluster = MarkerCluster().add_to(m)
+        
+        # Agregar marcadores
+        marker_count = 0
+        for idx, row in enumerate(data):
+            try:
+                raw_lat, raw_lon, clase, tipo, addr, barrio = row[0], row[1], row[2], row[3], row[4], row[5]
+                
+                # Limpieza
+                if isinstance(raw_lat, str): raw_lat = raw_lat.replace(',', '.')
+                if isinstance(raw_lon, str): raw_lon = raw_lon.replace(',', '.')
+                
+                lat = float(raw_lat)
+                lon = float(raw_lon)
+
+                # Validación
+                if lat == 0 or lon == 0: continue
+                if not (-34.7 < lat < -34.5 and -58.5 < lon < -58.3): continue
+                
+                # Popup HTML
+                popup_html = f"""
+                <div style='min-width: 250px; font-family: Arial;'>
+                    <h4 style='margin: 0 0 8px 0; color: #1e40af;'>{clase}</h4>
+                    <p style='margin: 4px 0;'><b>Tipo:</b> {tipo}</p>
+                    <p style='margin: 4px 0;'><b>Dirección:</b> {addr}</p>
+                    <p style='margin: 4px 0;'><b>Barrio:</b> {barrio if barrio else 'S/D'}</p>
+                </div>
+                """
+                
+                # Agregar marcador circular
+                folium.CircleMarker(
+                    location=[lat, lon],
+                    radius=6,
+                    color='#dc2626',
+                    fill=True,
+                    fill_color='#ef4444',
+                    fill_opacity=0.7,
+                    weight=2,
+                    popup=folium.Popup(popup_html, max_width=300)
+                ).add_to(marker_cluster)
+                
+                marker_count += 1
+                
+            except (ValueError, TypeError, IndexError) as e:
+                logger.warning(f"Error procesando fila {idx}: {e}")
+                continue
+        
+        logger.info(f"✅ Mapa generado con {marker_count} marcadores")
+        
+        # Convertir el mapa a HTML
+        map_html = m._repr_html_()
+        
+        # Retornar como objeto HTML de Shiny
+        return shiny_HTML(map_html)
+
+    @output
+    @render.text 
+    def map_header():
+        return f"Mapa de Anuncios ({len(filtered_data())} resultados)"
 
 app = App(app_ui, server)
 
+```
+
+# ==========================================
+# FILE: app/old.py
+# ==========================================
+```python
+import logging
+from pathlib import Path
+from typing import Any
+
+import duckdb
+import ipyleaflet as L
+from ipywidgets import HTML
+from shiny import App, reactive, ui, render
+from shinywidgets import output_widget, render_widget
+
+# --- Logging Configuration ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+# --- Data Path Configuration ---
+DATA_PATH = Path("data/processed/tablero_anuncios_consolidado.parquet")
+
+# --- Helper Functions ---
+def load_filter_options() -> dict[str, Any]:
+    """Carga opciones de filtros desde el parquet de manera segura."""
+    defaults = {
+        "clase": [], "tipo": [], "caracteristica": [], 
+        "needs_geocoding": [], "metros_min": 0, "metros_max": 100,
+    }
+    
+    if not DATA_PATH.exists():
+        return defaults
+    
+    try:
+        con = duckdb.connect(database=":memory:")
+        clase_values = [row[0] for row in con.execute(f"SELECT DISTINCT clase FROM '{DATA_PATH}' WHERE clase IS NOT NULL ORDER BY clase").fetchall()]
+        tipo_values = [row[0] for row in con.execute(f"SELECT DISTINCT tipo FROM '{DATA_PATH}' WHERE tipo IS NOT NULL ORDER BY tipo").fetchall()]
+        caract_values = [row[0] for row in con.execute(f"SELECT DISTINCT caracteristica FROM '{DATA_PATH}' WHERE caracteristica IS NOT NULL ORDER BY caracteristica").fetchall()]
+        needs_geocoding_values = [str(row[0]) for row in con.execute(f"SELECT DISTINCT needs_geocoding FROM '{DATA_PATH}' WHERE needs_geocoding IS NOT NULL ORDER BY needs_geocoding").fetchall()]
+        metros_range = con.execute(f"SELECT MIN(metros), MAX(metros) FROM '{DATA_PATH}' WHERE metros IS NOT NULL").fetchone()
+        con.close()
+        
+        return {
+            "clase": clase_values, "tipo": tipo_values, "caracteristica": caract_values,
+            "needs_geocoding": needs_geocoding_values,
+            "metros_min": int(metros_range[0]) if metros_range and metros_range[0] else 0,
+            "metros_max": int(metros_range[1]) if metros_range and metros_range[1] else 100,
+        }
+    except Exception as e:
+        logger.error(f"Error loading filter options: {e}")
+        return defaults
+
+FILTER_OPTIONS = load_filter_options()
+
+# --- UI Definition ---
+app_ui = ui.page_fillable(
+    ui.h2("BA OOH Ads - Explorer"),
+    ui.p("Visualización de anuncios en CABA"),
+    
+    ui.layout_sidebar(
+        ui.sidebar(
+            ui.h4("Filtros"),
+            ui.input_checkbox_group("clase_filter", "Clase:", choices=FILTER_OPTIONS["clase"], selected=FILTER_OPTIONS["clase"]),
+            ui.hr(),
+            ui.input_checkbox_group("tipo_filter", "Tipo:", choices=FILTER_OPTIONS["tipo"], selected=FILTER_OPTIONS["tipo"]),
+            ui.hr(),
+            ui.input_selectize("caracteristica_filter", "Característica:", choices=FILTER_OPTIONS["caracteristica"], multiple=True, options={"placeholder": "Seleccionar..."}),
+            ui.hr(),
+            ui.input_checkbox_group("needs_geocoding_filter", "Geocodificación:", choices=FILTER_OPTIONS["needs_geocoding"], selected=FILTER_OPTIONS["needs_geocoding"]),
+            ui.hr(),
+            ui.input_slider("metros_filter", "Metros²:", min=FILTER_OPTIONS["metros_min"], max=FILTER_OPTIONS["metros_max"], value=[FILTER_OPTIONS["metros_min"], FILTER_OPTIONS["metros_max"]], step=1),
+            width=280, open="desktop",
+        ),
+        ui.card(
+            ui.card_header(ui.output_text("map_header")),
+            output_widget("map_output"),
+            full_screen=True, fill=True,
+        ),
+    ),
+)
+
+# --- SERVER LOGIC ---
+def server(input, output, session):
+    
+    # 1. INSTANCIA ÚNICA DEL MAPA
+    map_widget = L.Map(
+        center=(-34.6037, -58.3816),
+        zoom=12,
+        scroll_wheel_zoom=True,
+        basemap=L.basemaps.CartoDB.Positron,
+        layout={'height': '600px', 'width': '100%'}
+    )
+    
+    # Capa para marcadores
+    markers_layer = L.LayerGroup()
+    map_widget.add_layer(markers_layer)
+
+    @render_widget
+    def map_output():
+        return map_widget
+    
+    # 2. Lógica de Datos
+    @reactive.calc
+    def filtered_data() -> list[tuple]:
+        if not DATA_PATH.exists(): return []
+        
+        s_clase = list(input.clase_filter())
+        s_tipo = list(input.tipo_filter())
+        s_caract = list(input.caracteristica_filter())
+        s_geo = list(input.needs_geocoding_filter())
+        r_metros = input.metros_filter()
+        
+        clauses = ["lat IS NOT NULL", "long IS NOT NULL"]
+
+        if not s_clase or not s_tipo: return []
+        
+        if s_clase: clauses.append(f"clase IN ({', '.join([f'{chr(39)}{c}{chr(39)}' for c in s_clase])})")
+        if s_tipo: clauses.append(f"tipo IN ({', '.join([f'{chr(39)}{t}{chr(39)}' for t in s_tipo])})")
+        if s_caract: clauses.append(f"caracteristica IN ({', '.join([f'{chr(39)}{c}{chr(39)}' for c in s_caract])})")
+        if r_metros: clauses.append(f"metros BETWEEN {r_metros[0]} AND {r_metros[1]}")
+        
+        if s_geo:
+            conds = []
+            for v in s_geo:
+                v_s = str(v).lower()
+                if v_s == 'true': conds.append("needs_geocoding = TRUE")
+                elif v_s == 'false': conds.append("needs_geocoding = FALSE")
+                else: conds.append(f"needs_geocoding = '{v}'")
+            if conds: clauses.append(f"({' OR '.join(conds)})")
+        else:
+            return []
+
+        query = f"""
+            SELECT lat, long, clase, tipo, full_address, barrio_desc
+            FROM '{DATA_PATH}'
+            WHERE {" AND ".join(clauses)}
+            LIMIT 50
+        """
+        
+        try:
+            con = duckdb.connect(database=":memory:")
+            rows = con.execute(query).fetchall()
+            con.close()
+            return rows
+        except Exception as e:
+            logger.error(f"Query Error: {e}")
+            return []
+
+    # 3. Lógica de Actualización (MÉTODO CORREGIDO)
+    @reactive.Effect
+    def update_map():
+        """Actualiza los marcadores en el mapa."""
+        data = filtered_data()
+        
+        # PASO 1: Limpiar marcadores viejos
+        markers_layer.clear_layers()
+        
+        # PASO 2: Crear y agregar marcadores UNO POR UNO
+        marker_count = 0
+        for idx, row in enumerate(data):
+            try:
+                raw_lat, raw_lon, clase, tipo, addr, barrio = row[0], row[1], row[2], row[3], row[4], row[5]
+                
+                # Limpieza
+                if isinstance(raw_lat, str): raw_lat = raw_lat.replace(',', '.')
+                if isinstance(raw_lon, str): raw_lon = raw_lon.replace(',', '.')
+                
+                lat = float(raw_lat)
+                lon = float(raw_lon)
+
+                # Validación
+                if lat == 0 or lon == 0: continue
+                if not (-34.7 < lat < -34.5 and -58.5 < lon < -58.3): continue
+                
+                # Crear marcador con CÍRCULO (más visible que Marker estándar)
+                circle = L.CircleMarker(
+                    location=(lat, lon),
+                    radius=8,  # Tamaño aumentado
+                    color="#dc2626",  # Rojo brillante para debugging
+                    fill_color="#ef4444",
+                    fill_opacity=0.8,
+                    weight=2
+                )
+                
+                # Popup
+                popup_html = f"""
+                <div style='min-width: 200px;'>
+                    <b>{clase}</b><br>
+                    <i>{tipo}</i><br>
+                    {addr}<br>
+                    <small>{barrio if barrio else 'S/D'}</small>
+                </div>
+                """
+                circle.popup = L.Popup(child=HTML(value=popup_html))
+                
+                # AGREGAR AL MAPA INMEDIATAMENTE (sincronización forzada)
+                markers_layer.add_layer(circle)
+                marker_count += 1
+                
+            except (ValueError, TypeError, IndexError) as e:
+                logger.warning(f"Error procesando fila {idx}: {e}")
+                continue
+        
+        logger.info(f"✅ Actualizados {marker_count} marcadores VISIBLES en el mapa")
+
+    @output
+    @render.text 
+    def map_header():
+        return f"Mapa de Anuncios ({len(filtered_data())} resultados)"
+
+app = App(app_ui, server)
 ```
 
 ## Carpeta: tests/

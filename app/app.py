@@ -40,6 +40,7 @@ def load_filter_options() -> dict[str, Any]:
         caract_values = [row[0] for row in con.execute(f"SELECT DISTINCT caracteristica FROM '{DATA_PATH}' WHERE caracteristica IS NOT NULL ORDER BY caracteristica").fetchall()]
         needs_geocoding_values = [str(row[0]) for row in con.execute(f"SELECT DISTINCT needs_geocoding FROM '{DATA_PATH}' WHERE needs_geocoding IS NOT NULL ORDER BY needs_geocoding").fetchall()]
         metros_range = con.execute(f"SELECT MIN(metros), MAX(metros) FROM '{DATA_PATH}' WHERE metros IS NOT NULL").fetchone()
+        macro_values = [row[0] for row in con.execute(f"SELECT DISTINCT unnest(macro_category) FROM '{DATA_PATH}' WHERE macro_category IS NOT NULL ORDER BY 1").fetchall()]
         con.close()
         
         return {
@@ -47,7 +48,9 @@ def load_filter_options() -> dict[str, Any]:
             "needs_geocoding": needs_geocoding_values,
             "metros_min": int(metros_range[0]) if metros_range and metros_range[0] else 0,
             "metros_max": int(metros_range[1]) if metros_range and metros_range[1] else 100,
+            "macro_category": macro_values 
         }
+    
     except Exception as e:
         logger.error(f"Error loading filter options: {e}")
         return defaults
@@ -115,6 +118,11 @@ app_ui = ui.page_fillable(
             ui.input_checkbox_group("needs_geocoding_filter", "Geocodificación:", choices=FILTER_OPTIONS["needs_geocoding"], selected=FILTER_OPTIONS["needs_geocoding"]),
             ui.hr(),
             ui.input_slider("metros_filter", "Metros²:", min=FILTER_OPTIONS["metros_min"], max=FILTER_OPTIONS["metros_max"], value=[FILTER_OPTIONS["metros_min"], FILTER_OPTIONS["metros_max"]], step=1),
+            ui.hr(),
+            ui.input_selectize("macro_filter", "Categoría (Cluster):", 
+                               choices=FILTER_OPTIONS.get("macro_category", []), 
+                               multiple=True, options={"placeholder": "Todas..."}),
+            ui.hr(),
             width=300, 
             open="desktop",
         ),
@@ -193,6 +201,7 @@ def server(input, output, session):
         s_caract = list(input.caracteristica_filter())
         s_geo = list(input.needs_geocoding_filter())
         r_metros = input.metros_filter()
+        s_macro = list(input.macro_filter()) 
         
         clauses = ["lat IS NOT NULL", "long IS NOT NULL"]
 
@@ -203,6 +212,14 @@ def server(input, output, session):
         if s_caract: clauses.append(f"caracteristica IN ({', '.join([f'{chr(39)}{c}{chr(39)}' for c in s_caract])})")
         if r_metros: clauses.append(f"metros BETWEEN {r_metros[0]} AND {r_metros[1]}")
         
+        if s_macro:
+            # Escapar comillas simples para SQL
+            safe_macros = [m.replace("'", "''") for m in s_macro]
+            # Construir literal de lista DuckDB: ['Cat A', 'Cat B']
+            list_literal = "[" + ", ".join([f"'{m}'" for m in safe_macros]) + "]"
+            # Función list_intersect devuelve lista compartida, comprobamos si longitud > 0
+            clauses.append(f"len(list_intersect(macro_category, {list_literal})) > 0")        
+
         if s_geo:
             conds = []
             for v in s_geo:
